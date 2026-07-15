@@ -1,0 +1,10 @@
+﻿node_modules/
+cloudflared*.log
+*.log
+.env
+
+# Local runtime data contains API keys, Feishu secrets, event logs, and run logs.
+data/studio.json
+data/lark_events/
+data/runs/
+data/*.log

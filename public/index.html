@@ -1,0 +1,335 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TONA Agent Studio</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">T</div>
+          <div>
+            <h1>TONA</h1>
+            <p>Agent Studio</p>
+          </div>
+        </div>
+        <nav class="nav">
+          <button class="nav-item active" data-view="quickstart">快速开始</button>
+          <button class="nav-item" data-view="studio">工作台</button>
+          <button class="nav-item" data-view="providers">模型</button>
+          <button class="nav-item" data-view="agents">角色</button>
+          <button class="nav-item" data-view="workflows">流程</button>
+          <button class="nav-item" data-view="lark">飞书</button>
+          <button class="nav-item" data-view="runs">记录</button>
+        </nav>
+        <div class="sidebar-footer">
+          <span class="status-dot"></span>
+          <span id="sidebarStatus">本地运行</span>
+        </div>
+      </aside>
+
+      <main class="main">
+
+        <section class="view active" id="view-quickstart">
+          <div class="topbar">
+            <div>
+              <p class="eyebrow">One-Click Setup</p>
+              <h2>一键准备科研 AI 助手</h2>
+              <p class="page-subtitle">把模型 Key、飞书机器人、今天要跑的任务放到一个地方。你不用在多个页面之间来回找。</p>
+            </div>
+            <button class="primary" id="quickRunButton">保存并运行</button>
+          </div>
+
+          <section class="setup-status" id="setupStatusBox"></section>
+
+          <div class="quick-grid">
+            <section class="panel">
+              <div class="panel-heading"><h3>1. 模型</h3><span>必填一个</span></div>
+              <form id="quickSetupForm" class="form-grid">
+                <label>供应商<select name="providerId" id="quickProviderSelect"></select></label>
+                <label>模型名<input name="model" id="quickModelInput" placeholder="deepseek-chat" /></label>
+                <label class="span-2">API Key<input name="apiKey" type="password" placeholder="粘贴 key 后保存会自动启用" /></label>
+                <label class="span-2">Base URL<input name="baseUrl" id="quickBaseUrlInput" /></label>
+                <label class="span-2">飞书群机器人 Webhook，可选<input name="larkWebhookUrl" placeholder="今天推荐：群自定义机器人 webhook" /></label>
+                <label class="span-2">Webhook 签名 Secret，可选<input name="larkWebhookSecret" type="password" placeholder="自定义机器人开启签名才填" /></label>
+                <button class="primary span-2" type="submit">保存配置并诊断</button>
+              </form>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading"><h3>2. 今天要做什么</h3><span>选择一个流程</span></div>
+              <div class="workflow-choice">
+                <label><input type="radio" name="quickWorkflow" value="research_intel_brief" checked /> 科研信息分析</label>
+                <p>适合论文摘要、科研新闻、会议通知、项目机会，输出研究价值和可跟进问题。</p>
+                <label><input type="radio" name="quickWorkflow" value="research_content_pipeline" /> 研究型内容生产</label>
+                <p>适合把研究材料转成选题、标题、开头、短内容和长文结构。</p>
+              </div>
+              <textarea id="quickInput" spellcheck="false" placeholder="把论文摘要、新闻链接文字、项目通知、研究材料粘贴到这里..."></textarea>
+              <div class="inline-actions quick-actions">
+                <button id="quickSaveButton" type="button">只保存配置</button>
+                <button id="quickSampleButton" type="button">填入示例</button>
+                <button id="quickSendLarkButton" type="button">发送结果到飞书</button>
+              </div>
+            </section>
+          </div>
+
+          <section class="panel output-panel">
+            <div class="panel-heading"><h3>一键运行结果</h3><span id="quickRunMeta">等待输入</span></div>
+            <div id="quickOutput" class="run-output"></div>
+          </section>
+        </section>
+
+        <section class="view" id="view-studio">
+          <div class="topbar">
+            <div>
+              <p class="eyebrow">Workspace</p>
+              <h2>多角色工作台</h2>
+              <p class="page-subtitle">第一次用，按 1-2-3 来：先去“模型”填 key，再去“角色”确认每个 AI 用哪个模型，最后回这里粘贴材料运行。</p>
+            </div>
+            <button class="primary" id="runWorkflowButton">开始运行</button>
+          </div>
+
+          <section class="guide-strip" id="quickGuide">
+            <button class="guide-step" data-jump="providers"><span>1</span><div><strong>先填模型 Key</strong><p>点这里去模型页，选择 OpenAI / DeepSeek / Kimi / 豆包，填 API Key 并启用。</p></div></button>
+            <button class="guide-step" data-jump="agents"><span>2</span><div><strong>再确认 AI 角色</strong><p>每个角色可以用不同模型，比如 Researcher 用 Kimi，Critic 用 DeepSeek。</p></div></button>
+            <button class="guide-step" data-jump="studio"><span>3</span><div><strong>最后运行工作流</strong><p>粘贴一段材料，选择流程，点“开始运行”，结果会分步骤显示。</p></div></button>
+          </section>
+
+          <div class="next-action" id="nextActionBox"></div>
+
+          <div class="studio-grid">
+            <section class="panel input-panel">
+              <div class="panel-heading">
+                <h3>输入</h3>
+                <select id="workflowSelect"></select>
+              </div>
+              <textarea id="workflowInput" spellcheck="false">我想做一个个人 AI agent 工作台。它需要支持多个模型供应商，比如 OpenAI、DeepSeek、豆包和 Kimi；用户可以用页面创建角色、配置技能、编排工作流，并在未来接入飞书文档和群聊。</textarea>
+              <div class="inline-actions">
+                <button id="loadSampleButton">示例材料</button>
+                <button id="clearInputButton">清空</button>
+              </div>
+            </section>
+
+            <section class="panel steps-panel">
+              <div class="panel-heading">
+                <h3>流程步骤</h3>
+                <span id="workflowDescription"></span>
+              </div>
+              <div id="workflowSteps" class="step-list"></div>
+            </section>
+          </div>
+
+          <section class="panel output-panel">
+            <div class="panel-heading">
+              <h3>运行输出</h3>
+              <div class="inline-actions">
+                <button id="copyOutputButton">复制最终稿</button>
+                <button id="sendToLarkButton">发送到飞书</button>
+              </div>
+            </div>
+            <div id="runStatus" class="run-status">选择流程，填入材料，然后开始运行。</div>
+            <div id="runOutput" class="run-output"></div>
+          </section>
+        </section>
+
+        <section class="view" id="view-providers">
+          <div class="topbar">
+            <div>
+              <p class="eyebrow">Model Registry</p>
+              <h2>模型供应商</h2>
+              <p class="page-subtitle">这里放你的各种大模型 key。先点左边卡片，再在右边填 key、启用、保存、测试。</p>
+            </div>
+            <button class="primary" id="newProviderButton">新增模型</button>
+          </div>
+          <section class="howto"><strong>怎么配置模型：</strong><span>1. 选一个供应商卡片。</span><span>2. 填 API Key；Base URL 通常不用改。</span><span>3. 点“保存模型”会自动启用，然后点“测试连接”。</span></section>
+          <div class="split">
+            <section class="panel">
+              <div class="panel-heading">
+                <h3>已配置</h3>
+                <span>API Key 只显示遮罩</span>
+              </div>
+              <div id="providerList" class="cards"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-heading">
+                <h3>编辑模型</h3>
+                <button id="testProviderButton">测试连接</button>
+              </div>
+              <form id="providerForm" class="form-grid">
+                <input type="hidden" name="id" />
+                <label>名称<input name="name" required /></label>
+                <label>类型<select name="type"><option value="openai_compatible">OpenAI-compatible</option></select></label>
+                <label class="span-2">Base URL<input name="baseUrl" required /></label>
+                <label class="span-2">API Key<input name="apiKey" type="password" placeholder="留空则保留原 key" /></label>
+                <label>默认模型<input name="defaultModel" required /></label>
+                <label>启用状态<select name="enabled"><option value="true">启用</option><option value="false">禁用</option></select></label>
+                <label class="span-2">可用模型，用逗号分隔<input name="models" /></label>
+                <label class="span-2">备注<textarea name="notes"></textarea></label>
+                <p class="form-hint span-2">提示：填入新的 API Key 后点击保存，会自动切换为启用。</p>
+                <button class="primary span-2" type="submit">保存并启用模型</button>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-agents">
+          <div class="topbar">
+            <div>
+              <p class="eyebrow">Agent Registry</p>
+              <h2>AI 角色</h2>
+              <p class="page-subtitle">这里是“设计 AI 员工”的地方。你填定位、目标、边界和输出格式，不需要写代码。</p>
+            </div>
+            <button class="primary" id="newAgentButton">新增角色</button>
+          </div>
+          <section class="howto"><strong>怎么配置角色：</strong><span>1. 选左边角色。</span><span>2. 在右边选择它用哪个模型供应商。</span><span>3. 改它的任务、边界、输出格式，保存。</span></section>
+          <div class="split">
+            <section class="panel">
+              <div class="panel-heading">
+                <h3>角色列表</h3>
+                <span>每个角色可绑定不同模型</span>
+              </div>
+              <div id="agentList" class="cards"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-heading"><h3>编辑角色</h3></div>
+              <form id="agentForm" class="form-grid">
+                <input type="hidden" name="id" />
+                <label>名称<input name="name" required /></label>
+                <label>默认模型<select name="providerId" id="agentProviderSelect"></select></label>
+                <label>模型名<input name="model" required /></label>
+                <label>温度<input name="temperature" type="number" min="0" max="2" step="0.1" /></label>
+                <label class="span-2">角色定位<textarea name="role"></textarea></label>
+                <label class="span-2">风格<textarea name="style"></textarea></label>
+                <label class="span-2">目标<textarea name="goals"></textarea></label>
+                <label class="span-2">边界<textarea name="guardrails"></textarea></label>
+                <label class="span-2">输出格式<textarea name="outputFormat"></textarea></label>
+                <label class="span-2">技能，用逗号分隔<input name="skills" /></label>
+                <button class="primary span-2" type="submit">保存角色</button>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-workflows">
+          <div class="topbar">
+            <div>
+              <p class="eyebrow">Workflow Engine</p>
+              <h2>工作流</h2>
+              <p class="page-subtitle">工作流就是“谁先做、谁后做、每一步做什么”。第一版用步骤列表，后面再做拖拽。</p>
+            </div>
+            <button class="primary" id="newWorkflowButton">新增流程</button>
+          </div>
+          <section class="howto"><strong>怎么编排流程：</strong><span>1. 选左边流程。</span><span>2. 右边每行格式：角色ID | 任务。</span><span>3. 例：researcher | 总结材料并提取核心观点。</span></section>
+          <div class="split">
+            <section class="panel">
+              <div class="panel-heading">
+                <h3>流程列表</h3>
+                <span>步骤式编排</span>
+              </div>
+              <div id="workflowList" class="cards"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-heading"><h3>编辑流程</h3></div>
+              <form id="workflowForm" class="form-grid">
+                <input type="hidden" name="id" />
+                <label>名称<input name="name" required /></label>
+                <label>输入类型<select name="inputType"><option value="text">文本</option><option value="lark_doc" disabled>飞书文档，后续</option></select></label>
+                <label class="span-2">描述<textarea name="description"></textarea></label>
+                <label class="span-2">步骤，每行一个：agentId | task<textarea name="steps" class="steps-textarea"></textarea></label>
+                <button class="primary span-2" type="submit">保存流程</button>
+              </form>
+            </section>
+          </div>
+        </section>
+
+
+        <section class="view" id="view-lark">
+          <div class="topbar">
+            <div>
+              <p class="eyebrow">Feishu Connector</p>
+              <h2>飞书接入</h2>
+              <p class="page-subtitle">飞书有两种接法：今天最低成本用“群自定义机器人 Webhook”推送结果；你看到的 App ID / Secret 属于开放平台应用机器人，是以后做群里可 @ 的角色。</p>
+            </div>
+            <button id="testLarkButton">测试发送</button>
+          </div>
+          <section class="howto">
+            <strong>今天怎么接：</strong>
+            <span>1. 在个人飞书里建一个群，比如“我的 AI 研究助手”。</span>
+            <span>2. 群设置里添加“自定义机器人”，复制 webhook。</span>
+            <span>3. 粘到下面保存，点测试发送。</span>
+            <span>4. 回工作台运行“科研信息分析”或“研究型内容生产”，点“发送到飞书”。</span>
+          </section>
+          <div class="split">
+            <section class="panel">
+              <div class="panel-heading"><h3>方式 A：群自定义机器人</h3><span>今天推荐</span></div>
+              <form id="larkForm" class="form-grid">
+                <label class="span-2">Webhook URL<input name="larkWebhookUrl" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." /></label>
+                <label class="span-2">签名 Secret，可选<input name="larkWebhookSecret" type="password" placeholder="如果机器人开启了签名，把 secret 填这里" /></label>
+                <button class="primary span-2" type="submit">保存飞书连接</button>
+              </form>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading"><h3>开放平台应用机器人</h3><span>复制回调 URL</span></div>
+              <div class="mode-note">
+                <strong>这里负责回调地址和权限提示。</strong>
+                <p>App ID / Secret / Token / Encrypt Key 统一在下方“角色机器人矩阵”里填写。每个飞书应用机器人绑定一个 TONA 角色。</p>
+              </div>
+
+              <div class="wizard-box" id="larkAppWizard">
+                <div class="panel-heading"><h3>自动生成的配置向导</h3><span>复制到飞书后台</span></div>
+                <div id="larkAppDiagnosis" class="diagnosis-list"></div>
+              </div>
+            </section>
+
+            <section class="panel span-2">
+              <div class="panel-heading"><h3>角色机器人矩阵</h3><span>一个飞书 App 绑定一个角色</span><button id="newLarkBotButton" type="button">新增角色机器人</button></div>
+              <div class="mode-note">
+                <strong>你要的模式在这里配置。</strong>
+                <p>每个独立飞书机器人都需要一个飞书开放平台应用。回调 URL 可以共用本页上方的地址；保存后，TONA 会按 App ID / Encrypt Key 自动路由到对应角色。</p>
+              </div>
+              <div id="larkBotList" class="cards compact-cards"></div>
+              <form id="larkBotForm" class="form-grid">
+                <input type="hidden" name="id" />
+                <label>机器人名称<input name="name" placeholder="例如：科研助理机器人" required /></label>
+                <label>绑定角色<select name="agentId" id="larkBotAgentSelect"></select></label>
+                <label class="span-2">App ID<input name="appId" placeholder="cli_xxx" required /></label>
+                <label class="span-2">App Secret<input name="appSecret" type="password" placeholder="留空则保留原 secret" /></label>
+                <label class="span-2">公网回调 URL<input name="publicCallbackUrl" placeholder="同一个 URL 可以给所有机器人用" /></label>
+                <label class="span-2">Verification Token<input name="verificationToken" placeholder="飞书事件订阅页面里的 Verification Token" /></label>
+                <label class="span-2">Encrypt Key<input name="encryptKey" type="password" placeholder="飞书事件加密的 Encrypt Key" /></label>
+                <label>启用<select name="enabled"><option value="true">启用</option><option value="false">禁用</option></select></label>
+                <button class="primary span-2" type="submit">保存角色机器人</button>
+                <button class="span-2" id="testLarkBotButton" type="button">测试当前机器人凭证</button>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-runs">
+          <div class="topbar">
+            <div>
+              <p class="eyebrow">Run Logger</p>
+              <h2>运行记录</h2>
+              <p class="page-subtitle">这里看每次工作流的执行结果、模型使用情况和错误提示。</p>
+            </div>
+            <button id="refreshRunsButton">刷新</button>
+          </div>
+          <section class="panel">
+            <div id="runList" class="run-list"></div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>
+
+
+
+

@@ -1,0 +1,12 @@
+{
+  "name": "tona-agent-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local, no-code multi-model agent studio for personal AI workflows.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
