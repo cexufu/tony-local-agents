@@ -254,7 +254,7 @@ function createInitialDb() {
   db.settings = {
     ...db.settings,
     defaultProviderId: "deepseek",
-    botConversationMaxRounds: 5,
+    botConversationMaxRounds: 10,
     larkBots: []
   };
   return db;
@@ -311,6 +311,17 @@ function maskKey(key) {
   if (!key) return "";
   if (key.length <= 8) return "********";
   return `${key.slice(0, 4)}...${key.slice(-4)}`;
+}
+
+function coerceBoolean(value, fallback = false) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  if (value == null || value === "") return fallback;
+  return Boolean(value);
 }
 
 function sendJson(res, status, body) {
@@ -402,11 +413,19 @@ async function callOpenAICompatible(provider, agent, messages) {
     throw new Error(`${provider.name} is missing an API key.`);
   }
   const childInput = JSON.stringify({ provider, agent, messages, timeoutMs: 45000 });
+  const nodeArgs = [];
+  const nodeMajor = Number(process.versions.node.split(".")[0]);
+  const hasProxyEnv = Boolean(process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY);
+  if (hasProxyEnv && nodeMajor >= 24) {
+    nodeArgs.push("--use-env-proxy");
+  }
+  nodeArgs.push(path.join(ROOT, "llm_call.js"));
   return new Promise((resolve, reject) => {
-    const child = execFile(process.execPath, [path.join(ROOT, "llm_call.js")], {
+    const child = execFile(process.execPath, nodeArgs, {
       cwd: ROOT,
       timeout: 60000,
-      maxBuffer: 2_000_000
+      maxBuffer: 2_000_000,
+      env: process.env
     }, (error, stdout, stderr) => {
       if (error) {
         const message = (stderr || error.message || "LLM call failed").trim();
@@ -588,7 +607,7 @@ function normalizeLarkBot(bot = {}) {
     verificationToken: String(bot.verificationToken || "").trim(),
     encryptKey: String(bot.encryptKey || "").trim(),
     publicCallbackUrl: String(bot.publicCallbackUrl || "").trim(),
-    enabled: bot.enabled !== false
+    enabled: coerceBoolean(bot.enabled, true)
   };
 }
 
@@ -813,7 +832,7 @@ async function getFeishuTenantToken(settings) {
   return payload.tenant_access_token;
 }
 
-const DEFAULT_BOT_CONVERSATION_MAX_ROUNDS = 5;
+const DEFAULT_BOT_CONVERSATION_MAX_ROUNDS = 10;
 
 function botConversationMaxRounds(db) {
   const value = Number(db.settings?.botConversationMaxRounds || DEFAULT_BOT_CONVERSATION_MAX_ROUNDS);
@@ -1047,7 +1066,7 @@ async function handleApi(req, res, pathname) {
       const hasNewApiKey = Boolean(body.apiKey && !body.apiKey.includes("*"));
       const provider = upsertById(db.providers, {
         ...body,
-        enabled: hasNewApiKey ? true : Boolean(body.enabled),
+        enabled: hasNewApiKey ? true : coerceBoolean(body.enabled, existing?.enabled || false),
         apiKey: hasNewApiKey ? body.apiKey : existing?.apiKey || "",
         models: Array.isArray(body.models) ? body.models : String(body.models || "").split(",").map((m) => m.trim()).filter(Boolean)
       });
@@ -1184,21 +1203,6 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`TONA Agent Studio is running at http://localhost:${PORT}`);
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
