@@ -956,6 +956,55 @@ async function processFeishuMessageEvent(eventBody, botConfig = null) {
   }
   await replyFeishuMessage(bot ? larkBotToAppSettings(bot) : (db.settings || {}), message.messageId, appendBotConversationMarker(replyText, conversation));
 }
+
+function summarizeFeishuEventLog(entry, errorText = "") {
+  const body = entry.body || {};
+  const event = body.event || body;
+  const message = event.message || {};
+  let text = "";
+  if (message.content) {
+    try {
+      const content = typeof message.content === "string" ? JSON.parse(message.content) : message.content;
+      text = content.text || content.content || "";
+    } catch {
+      text = String(message.content || "");
+    }
+  }
+  return {
+    receivedAt: entry.receivedAt || "",
+    decryptError: entry.decryptError || "",
+    botId: entry.botId || "",
+    agentId: entry.agentId || "",
+    eventType: body.header?.event_type || body.event_type || "",
+    appId: body.header?.app_id || body.app_id || "",
+    senderType: event.sender?.sender_type || "",
+    chatType: message.chat_type || "",
+    messageType: message.message_type || "",
+    messageId: message.message_id || "",
+    textPreview: String(text).replace(/<at[^>]*>.*?<\/at>/g, "@ ").replace(/\s+/g, " ").slice(0, 160),
+    replyError: String(errorText || "").split("\n")[0].slice(0, 240)
+  };
+}
+
+function listLarkEventLogs(limit = 30) {
+  const eventLogDir = path.join(DATA_DIR, "lark_events");
+  if (!fs.existsSync(eventLogDir)) return [];
+  return fs.readdirSync(eventLogDir)
+    .filter((file) => file.endsWith(".json"))
+    .sort()
+    .reverse()
+    .slice(0, Math.max(1, Math.min(Number(limit) || 30, 100)))
+    .map((file) => {
+      const id = file.replace(/\.json$/, "");
+      let entry = {};
+      try { entry = JSON.parse(fs.readFileSync(path.join(eventLogDir, file), "utf8")); } catch {}
+      let errorText = "";
+      const errorPath = path.join(eventLogDir, id + ".reply-error.txt");
+      if (fs.existsSync(errorPath)) errorText = fs.readFileSync(errorPath, "utf8");
+      return { id, ...summarizeFeishuEventLog(entry, errorText) };
+    });
+}
+
 function larkAppDiagnosis(db, req) {
   const settings = db.settings || {};
   const host = req.headers.host || `localhost:${PORT}`;
@@ -1148,6 +1197,10 @@ async function handleApi(req, res, pathname) {
     }
 
 
+    if (req.method === "GET" && pathname === "/api/lark-events") {
+      const limit = new URL(req.url, `http://${req.headers.host}`).searchParams.get("limit") || 30;
+      return sendJson(res, 200, { events: listLarkEventLogs(limit) });
+    }
     if (req.method === "GET" && pathname === "/api/lark-app-diagnose") {
       return sendJson(res, 200, larkAppDiagnosis(readDb(), req));
     }
