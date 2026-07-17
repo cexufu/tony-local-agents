@@ -1244,6 +1244,9 @@ ensureStore();
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  if (req.method === "GET" && (url.pathname === "/gateway/health" || url.pathname === "/api/health")) {
+    return sendJson(res, 200, { ok: true, service: "tona-agent-studio" });
+  }
   if (url.pathname === "/feishu/events") {
     handleFeishuEvent(req, res);
   } else if (url.pathname.startsWith("/api/")) {
