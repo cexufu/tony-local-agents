@@ -39,8 +39,8 @@ function startChild(name, cwd, port) {
   });
 }
 
-function proxy(req, res, { port, stripPrefix = '' }) {
-  let targetPath = req.url;
+function proxy(req, res, { port, stripPrefix = '', targetPath: requestedTargetPath = '' }) {
+  let targetPath = requestedTargetPath || req.url;
   if (stripPrefix && targetPath.startsWith(stripPrefix)) targetPath = targetPath.slice(stripPrefix.length) || '/';
   const headers = { ...req.headers, host: `127.0.0.1:${port}`, 'x-forwarded-host': req.headers.host || '', 'x-forwarded-proto': req.headers['x-forwarded-proto'] || (process.env.NODE_ENV === 'production' ? 'https' : 'http') };
   if (stripPrefix) headers['x-forwarded-prefix'] = stripPrefix;
@@ -72,10 +72,15 @@ const gateway = http.createServer(async (req, res) => {
     res.writeHead(tona && teamflow ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify({ ok: tona && teamflow, gateway: true, tona, teamflow }));
   }
-  if (pathname === '/teamflow') {
-    res.writeHead(308, { Location: '/teamflow/' });
-    return res.end();
+  // TONA_HUB_ENTRY_GATE_V1: unauthenticated visitors always start at the Hub login page.
+  const hasSession = /(?:^|;\s*)teamflow_session=/.test(String(req.headers.cookie || ''));
+  const publicTeamflowPaths = new Set(['/teamflow/hub-login.html', '/teamflow/hub-login.js', '/teamflow/hub-login.css', '/teamflow/hub.css']);
+  const publicTeamflowApi = pathname === '/teamflow/api/login' || pathname === '/teamflow/api/register' || pathname === '/teamflow/api/health';
+  if (!hasSession && pathname === '/') return proxy(req, res, { port: TEAMFLOW_PORT, targetPath: '/hub-login.html' });
+  if (!hasSession && (pathname === '/teamflow' || pathname === '/teamflow/' || (pathname.startsWith('/teamflow/') && !publicTeamflowPaths.has(pathname) && !publicTeamflowApi))) {
+    res.writeHead(302, { Location: '/' }); return res.end();
   }
+  if (pathname === '/teamflow') { res.writeHead(308, { Location: '/teamflow/' }); return res.end(); }
   if (pathname.startsWith('/teamflow/')) return proxy(req, res, { port: TEAMFLOW_PORT, stripPrefix: '/teamflow' });
   return proxy(req, res, { port: TONA_PORT });
 });
