@@ -250,19 +250,19 @@ const PERSONAL_AGENT_TEMPLATES = [
   }
 ];
 
+const CUSTOMER_DEFAULT_AGENT_IDS = new Set(["daily_assistant", "research_assistant", "coding_assistant"]);
 function createInitialDb() {
   const db = JSON.parse(JSON.stringify(DEFAULT_DB));
-  const existingIds = new Set(PERSONAL_AGENT_TEMPLATES.map((agent) => agent.id));
-  db.agents = [
-    ...PERSONAL_AGENT_TEMPLATES,
-    ...db.agents.filter((agent) => !existingIds.has(agent.id))
-  ];
-  db.settings = {
-    ...db.settings,
-    defaultProviderId: "deepseek",
-    botConversationMaxRounds: 10,
-    larkBots: []
-  };
+  const workspaceId = activeWorkspaceId();
+  const isCustomerWorkspace = Boolean(workspaceId && workspaceId !== LEGACY_OWNER_ID);
+  if (isCustomerWorkspace) {
+    db.agents = PERSONAL_AGENT_TEMPLATES.filter((agent) => CUSTOMER_DEFAULT_AGENT_IDS.has(agent.id));
+    db.workflows = [];
+  } else {
+    const existingIds = new Set(PERSONAL_AGENT_TEMPLATES.map((agent) => agent.id));
+    db.agents = [...PERSONAL_AGENT_TEMPLATES, ...db.agents.filter((agent) => !existingIds.has(agent.id))];
+  }
+  db.settings = { ...db.settings, defaultProviderId: "deepseek", botConversationMaxRounds: 10, larkBots: [] };
   return db;
 }
 

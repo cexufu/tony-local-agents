@@ -43,6 +43,12 @@ async function waitForHealth() {
     const studio = await fetch(`http://127.0.0.1:${port}/api/state`, { headers: { Cookie: cookie } });
     if (!studio.ok || !(await studio.json()).agents) throw new Error('AI Studio Hub authentication failed');
     if (!fs.existsSync(path.join(dataDir, 'workspaces', 'usr_owner', 'studio.json'))) throw new Error('AI Studio workspace data was not created');
+    const customerRegistration = await fetch(`http://127.0.0.1:${port}/teamflow/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Customer', email: 'customer@example.test', password: 'customer-password', teamName: 'Customer Private' }) });
+    if (!customerRegistration.ok) throw new Error('Customer registration failed');
+    const customerCookie = (customerRegistration.headers.get('set-cookie') || '').split(';')[0];
+    const customerStudio = await fetch(`http://127.0.0.1:${port}/api/state`, { headers: { Cookie: customerCookie } });
+    const customerState = await customerStudio.json(); const customerRoles = customerState.agents.map(agent => agent.id).sort();
+    if (customerRoles.join(',') !== 'coding_assistant,daily_assistant,research_assistant') throw new Error('Customer default roles were not limited to the three essentials');
     if (!fs.existsSync(path.join(dataDir, 'teamflow', 'teamflow.json'))) throw new Error('TeamFlow data was not isolated');
     console.log('Gateway test passed: Tona AI Hub session, TeamFlow subpath, AI Studio auth and separate workspace data');
   } finally {
