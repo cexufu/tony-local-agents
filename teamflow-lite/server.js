@@ -266,6 +266,18 @@ async function api(req, res, pathname) {
   return teamContext.run({ teamId: user._teamId, db: loadTeamDb(user._teamId) }, async () => {
   if (pathname === '/api/me') return json(res, 200, { user: publicUser(user), settings: db.settings });
   // TEAMFLOW_GROUP_INVITE_V1: an account owns a private workspace and may join shared groups by invite code.
+  if (pathname === '/api/account/password' && req.method === 'POST') {
+    const body = await readBody(req); const currentPassword = String(body.currentPassword || ''); const newPassword = String(body.newPassword || '');
+    const account = registry.users.find(item => item.id === user.id);
+    if (!account || !verifyPassword(currentPassword, account.passwordHash)) return json(res, 403, { error: 'Current password is incorrect.' });
+    if (newPassword.length < 12) return json(res, 400, { error: 'New password must be at least 12 characters.' });
+    const passwordHash = hashPassword(newPassword); account.passwordHash = passwordHash;
+    for (const teamId of account.teamIds || []) { const team = loadTeamDb(teamId); const member = team.users.find(item => item.id === account.id); if (member) { member.passwordHash = passwordHash; atomicWrite(teamFile(teamId), team); } }
+    persistRegistry();
+    const currentToken = parseCookies(req).teamflow_session;
+    for (const [token, session] of sessions) if (session.userId === user.id && token !== currentToken) sessions.delete(token);
+    return json(res, 200, { ok: true });
+  }
   if (pathname === '/api/hub') {
     const account = registry.users.find(item => item.id === user.id);
     const teams = (account?.teamIds || []).map(teamId => { const team = loadTeamDb(teamId); return { id: teamId, name: team.settings.teamName || 'TeamFlow Team', active: teamId === user._teamId }; });
