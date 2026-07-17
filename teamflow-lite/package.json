@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js && node --check feature-api.js && node --check reminder-engine.js && node --check public/app.js && node --check public/enhancements.js && node --check public/pwa.js && node --check public/sw.js",
-    "test": "node tests/smoke.js && node tests/features.js && node tests/reminders.js && node tests/concurrency.js && node tests/pwa.js"
+    "test": "node tests/smoke.js && node tests/features.js && node tests/reminders.js && node tests/concurrency.js && node tests/tenant-isolation.js && node tests/pwa.js"
   },
   "engines": {
     "node": ">=18"

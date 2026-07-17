@@ -2,12 +2,15 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks');
 const { handleFeatureApi } = require('./feature-api');
 const { createReminderEngine } = require('./reminder-engine');
 
 const PORT = Number(process.env.PORT || 7360);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'teamflow.json');
+const TEAMS_DIR = path.join(DATA_DIR, 'teams');
+const teamContext = new AsyncLocalStorage();
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const sessions = new Map();
 
@@ -68,23 +71,55 @@ function futureDate(offset) {
   return value.toISOString().slice(0, 10);
 }
 
-function loadDb() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(DB_FILE)) {
-    const seeded = seedDatabase();
-    fs.writeFileSync(DB_FILE, JSON.stringify(seeded, null, 2));
-    return seeded;
-  }
-  return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+function atomicWrite(file, value) {
+  const temp = file + '.tmp';
+  fs.writeFileSync(temp, JSON.stringify(value, null, 2));
+  if (fs.existsSync(file)) fs.copyFileSync(file, file + '.bak');
+  fs.renameSync(temp, file);
 }
 
-let db = loadDb();
-function saveDb() {
-  const temp = `${DB_FILE}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify(db, null, 2));
-  if (fs.existsSync(DB_FILE)) fs.copyFileSync(DB_FILE, `${DB_FILE}.bak`);
-  fs.renameSync(temp, DB_FILE);
+function teamFile(teamId) {
+  if (!/^team_[a-z0-9_]+$/i.test(String(teamId || ''))) throw new Error('Invalid team id');
+  return path.join(TEAMS_DIR, teamId + '.json');
 }
+
+function initialTeamData(source, teamId) {
+  return {
+    meta: { version: 1, teamId, createdAt: now() },
+    settings: { teamName: source.settings?.teamName || 'TeamFlow Team', reminderDays: Number(source.settings?.reminderDays || 2), teamKeyHash: source.settings?.teamKey ? hashPassword(source.settings.teamKey) : '' },
+    users: source.users || [], requirements: source.requirements || [], tasks: source.tasks || [], milestones: source.milestones || [], comments: source.comments || [], activities: source.activities || [], reminderDeliveries: source.reminderDeliveries || []
+  };
+}
+
+function migrateRegistry(raw) {
+  if (raw.meta?.version >= 2 && Array.isArray(raw.teams) && Array.isArray(raw.users)) return raw;
+  const teamId = 'team_owner';
+  const team = initialTeamData(raw, teamId);
+  fs.mkdirSync(TEAMS_DIR, { recursive: true });
+  if (!fs.existsSync(teamFile(teamId))) atomicWrite(teamFile(teamId), team);
+  return { meta: { version: 2, createdAt: raw.meta?.createdAt || now(), migratedAt: now(), migration: 'TEAMFLOW_MULTITENANT_V1' }, users: (raw.users || []).map(user => ({ id: user.id, email: user.email, passwordHash: user.passwordHash, status: user.status || 'active', teamIds: [teamId], createdAt: user.createdAt || now() })), teams: [{ id: teamId, createdAt: now() }] };
+}
+
+function loadDb() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(DB_FILE)) { const registry = migrateRegistry(seedDatabase()); atomicWrite(DB_FILE, registry); return registry; }
+  const raw = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); const registry = migrateRegistry(raw); if (registry !== raw) atomicWrite(DB_FILE, registry); return registry;
+}
+
+let registry = loadDb();
+const teamCache = new Map();
+function loadTeamDb(teamId) { if (teamCache.has(teamId)) return teamCache.get(teamId); const file = teamFile(teamId); if (!fs.existsSync(file)) throw new Error('Team workspace not found'); const value = JSON.parse(fs.readFileSync(file, 'utf8')); teamCache.set(teamId, value); return value; }
+function currentTeamId() { return teamContext.getStore()?.teamId || registry.teams?.[0]?.id || 'team_owner'; }
+function currentTeamDb() { return teamContext.getStore()?.db || loadTeamDb(currentTeamId()); }
+function persistRegistry() { atomicWrite(DB_FILE, registry); }
+function syncAccounts(teamId, teamDb) {
+  const activeIds = new Set(teamDb.users.map(user => user.id));
+  registry.users.forEach(account => { if (account.teamIds?.includes(teamId) && !activeIds.has(account.id)) account.teamIds = account.teamIds.filter(id => id !== teamId); });
+  teamDb.users.forEach(user => { let account = registry.users.find(item => item.id === user.id); if (!account) { account = { id: user.id, createdAt: user.createdAt || now(), teamIds: [] }; registry.users.push(account); } account.email = user.email; account.passwordHash = user.passwordHash; account.status = user.status || 'active'; account.teamIds = Array.from(new Set([...(account.teamIds || []), teamId])); });
+  persistRegistry();
+}
+function saveDb() { const active = teamContext.getStore(); if (!active) return persistRegistry(); syncAccounts(active.teamId, active.db); atomicWrite(teamFile(active.teamId), active.db); }
+const db = new Proxy({}, { get(_target, key) { return currentTeamDb()[key]; }, set(_target, key, value) { currentTeamDb()[key] = value; return true; } });
 
 const reminderEngine = createReminderEngine({ getDb: () => db, saveDb });
 
@@ -97,11 +132,15 @@ function parseCookies(req) {
   return Object.fromEntries(String(req.headers.cookie || '').split(';').map(v => v.trim().split('=')).filter(v => v.length === 2));
 }
 
-function getUser(req) {
+function sessionFor(req) {
   const token = parseCookies(req).teamflow_session || String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  const session = sessions.get(token);
-  if (!session || session.expiresAt < Date.now()) return null;
-  return db.users.find(user => user.id === session.userId && user.status === 'active') || null;
+  const session = sessions.get(token); return !session || session.expiresAt < Date.now() ? null : session;
+}
+function getUser(req) {
+  const session = sessionFor(req); if (!session) return null;
+  const account = registry.users.find(item => item.id === session.userId && item.status === 'active'); if (!account) return null;
+  const teamId = session.teamId || account.teamIds?.[0]; if (!teamId || !account.teamIds?.includes(teamId)) return null;
+  const member = loadTeamDb(teamId).users.find(user => user.id === account.id && user.status === 'active'); return member ? { ...member, _teamId: teamId } : null;
 }
 
 function can(user, permission) {
@@ -179,11 +218,26 @@ async function api(req, res, pathname) {
   if (pathname === '/api/health') return json(res, 200, { ok: true, service: 'teamflow-lite', dataWritable: fs.existsSync(DATA_DIR), reminder: reminderEngine.status() });
   if (pathname === '/api/login' && req.method === 'POST') {
     const body = await readBody(req);
-    const user = db.users.find(item => item.email.toLowerCase() === clean(body.email).toLowerCase());
-    if (!user || user.status !== 'active' || !verifyPassword(String(body.password || ''), user.passwordHash)) return json(res, 401, { error: '邮箱或密码不正确' });
+    const account = registry.users.find(item => item.email.toLowerCase() === clean(body.email).toLowerCase());
+    if (!account || account.status !== 'active' || !verifyPassword(String(body.password || ''), account.passwordHash)) return json(res, 401, { error: '邮箱或密码不正确' });
     const token = crypto.randomBytes(24).toString('hex');
-    sessions.set(token, { userId: user.id, expiresAt: Date.now() + 7 * 86400000 });
+    const teamId = account.teamIds?.[0];
+    if (!teamId) return json(res, 403, { error: 'No TeamFlow workspace is assigned to this account.' });
+    const user = loadTeamDb(teamId).users.find(item => item.id === account.id);
+    sessions.set(token, { userId: account.id, teamId, expiresAt: Date.now() + 7 * 86400000 });
     return json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': `teamflow_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800${process.env.NODE_ENV === 'production' ? '; Secure' : ''}` });
+  }
+  if (pathname === '/api/register' && req.method === 'POST') {
+    const body = await readBody(req); const email = clean(body.email).toLowerCase(); const password = String(body.password || ''); const name = clean(body.name);
+    if (!name || !/^\S+@\S+\.\S+$/.test(email) || password.length < 8) return json(res, 400, { error: 'Name, email, and an 8-character password are required.' });
+    if (registry.users.some(item => item.email.toLowerCase() === email)) return json(res, 409, { error: 'This email already has an account.' });
+    const user = { id: id('usr'), name, email, role: 'owner', title: clean(body.title), status: 'active', passwordHash: hashPassword(password), createdAt: now() }; const teamId = id('team');
+    const team = initialTeamData({ settings: { teamName: clean(body.teamName) || (name + "'s Team"), reminderDays: 2 }, users: [user], requirements: [], tasks: [], milestones: [], comments: [], activities: [] }, teamId);
+    team.activities.unshift({ id: id('act'), actorId: user.id, action: 'Created this private TeamFlow workspace', targetType: 'team', targetId: teamId, createdAt: now() });
+    registry.users.push({ id: user.id, email, passwordHash: user.passwordHash, status: 'active', teamIds: [teamId], createdAt: user.createdAt }); registry.teams.push({ id: teamId, createdAt: now() }); persistRegistry(); atomicWrite(teamFile(teamId), team); teamCache.set(teamId, team);
+    const token = crypto.randomBytes(24).toString('hex'); sessions.set(token, { userId: user.id, teamId, expiresAt: Date.now() + 7 * 86400000 });
+    const cookie = 'teamflow_session=' + token + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800' + (process.env.NODE_ENV === 'production' ? '; Secure' : '');
+    return json(res, 201, { user: publicUser(user), teamId }, { 'Set-Cookie': cookie });
   }
   if (pathname === '/api/logout' && req.method === 'POST') {
     sessions.delete(parseCookies(req).teamflow_session);
@@ -192,18 +246,21 @@ async function api(req, res, pathname) {
 
   const user = getUser(req);
   if (!user) return json(res, 401, { error: '请先登录' });
+  return teamContext.run({ teamId: user._teamId, db: loadTeamDb(user._teamId) }, async () => {
   if (pathname === '/api/me') return json(res, 200, { user: publicUser(user), settings: db.settings });
   if (pathname === '/api/hub') return json(res, 200, {
     user: publicUser(user),
     aiStudioUrl: process.env.AI_STUDIO_PUBLIC_URL || '/',
     teamflowUrl: process.env.APP_PUBLIC_URL || '/teamflow/',
-    teamKeyRequired: Boolean(db.settings.teamKey)
+    teamKeyRequired: Boolean(db.settings.teamKeyHash || db.settings.teamKey)
   });
   if (pathname === '/api/hub/team-access' && req.method === 'POST') {
     const body = await readBody(req);
     const supplied = clean(body.teamKey);
-    const expected = String(db.settings.teamKey || '');
-    if (expected && (supplied.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected)))) {
+    const expectedHash = String(db.settings.teamKeyHash || '');
+    const legacyExpected = String(db.settings.teamKey || '');
+    const accepted = expectedHash ? verifyPassword(supplied, expectedHash) : (!legacyExpected || (supplied.length === legacyExpected.length && crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(legacyExpected))));
+    if (!accepted) {
       return json(res, 403, { error: 'Team Key invalid.' });
     }
     const token = parseCookies(req).teamflow_session;
@@ -307,9 +364,10 @@ async function api(req, res, pathname) {
     const body = await readBody(req);
     if (body.teamName) db.settings.teamName = clean(body.teamName);
     if (body.reminderDays !== undefined) db.settings.reminderDays = Math.max(1, Math.min(30, Number(body.reminderDays) || 2));
-    if (body.teamKey !== undefined) db.settings.teamKey = clean(body.teamKey);
+    if (body.teamKey !== undefined && clean(body.teamKey)) { db.settings.teamKeyHash = hashPassword(clean(body.teamKey)); delete db.settings.teamKey; }
     saveDb(); return json(res, 200, { settings: db.settings });
   }
+  });
   return json(res, 404, { error: '接口不存在' });
 }
 

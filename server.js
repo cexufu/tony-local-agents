@@ -292,14 +292,40 @@ function ensureStore() {
   }
 }
 
+// TONA_SECRETS_ENCRYPTION_V1: encrypt credentials at rest when the Render master key is configured.
+const SECRET_FIELDS = new Set(['apiKey', 'larkWebhookSecret', 'larkAppSecret', 'larkVerificationToken', 'larkEncryptKey', 'appSecret', 'verificationToken', 'encryptKey']);
+function secretsKey() {
+  const source = String(process.env.TONA_SECRETS_KEY || '');
+  return source.length >= 24 ? crypto.createHash('sha256').update(source).digest() : null;
+}
+function encryptSecretAtRest(value) {
+  if (!value || String(value).startsWith('enc:v1:')) return value;
+  const key = secretsKey(); if (!key) return value;
+  const iv = crypto.randomBytes(12); const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const data = Buffer.concat([cipher.update(String(value), 'utf8'), cipher.final()]); const tag = cipher.getAuthTag();
+  return 'enc:v1:' + Buffer.concat([iv, tag, data]).toString('base64');
+}
+function decryptSecretAtRest(value) {
+  if (!String(value || '').startsWith('enc:v1:')) return value;
+  const key = secretsKey(); if (!key) throw new Error('Encrypted credentials require TONA_SECRETS_KEY on this server.');
+  const raw = Buffer.from(String(value).slice(7), 'base64'); const iv = raw.subarray(0, 12); const tag = raw.subarray(12, 28); const data = raw.subarray(28);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv); decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+}
+function transformSecrets(value, transform) {
+  if (Array.isArray(value)) return value.map(item => transformSecrets(item, transform));
+  if (!value || typeof value !== 'object') return value;
+  const copy = {};
+  for (const [key, item] of Object.entries(value)) copy[key] = SECRET_FIELDS.has(key) ? transform(item) : transformSecrets(item, transform);
+  return copy;
+}
 function readDb() {
   ensureStore();
-  return JSON.parse(fs.readFileSync(storagePaths().dbPath, "utf8"));
+  return transformSecrets(JSON.parse(fs.readFileSync(storagePaths().dbPath, "utf8")), decryptSecretAtRest);
 }
-
 function writeDb(db) {
   ensureStore();
-  fs.writeFileSync(storagePaths().dbPath, JSON.stringify(db, null, 2));
+  fs.writeFileSync(storagePaths().dbPath, JSON.stringify(transformSecrets(db, encryptSecretAtRest), null, 2));
 }
 
 function publicDb(db) {
