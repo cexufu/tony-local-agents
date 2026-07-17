@@ -176,10 +176,14 @@ function renderKanban(columns, tasks) {
 function bindTasks() { $$('[data-task]').forEach(card => card.onclick = () => openTask(card.dataset.task)); }
 
 function renderTeam() {
-  $('#content').innerHTML = `<div class="section-head"><div><h2>团队成员</h2><p>管理团队角色与访问权限。</p></div>${can('team.manage') ? '<button class="btn primary" id="newMember"><span>＋</span> 添加成员</button>' : ''}</div>
-    <div class="member-grid">${state.users.map(member => `<article class="member-card"><div class="member-card-head">${avatar(member.name)}${member.status === 'disabled' ? '<span class="status-pill">已停用</span>' : ''}</div><h3>${escapeHtml(member.name)}</h3><p>${escapeHtml(member.title || member.email)}</p><div class="member-meta"><span>${escapeHtml(member.email)}</span>${can('team.manage') && member.role !== 'owner' ? `<select class="role-select" data-member-role="${member.id}">${['admin','member','viewer'].map(role=>`<option value="${role}" ${member.role===role?'selected':''}>${labels.role[role]}</option>`).join('')}</select>` : `<span class="role-select">${labels.role[member.role]}</span>`}</div></article>`).join('')}</div>`;
+  const cards = state.users.map(member => {
+    const controls = can('team.manage') && member.role !== 'owner' ? `<select class="role-select" data-member-role="${member.id}">${['admin','member','viewer'].map(role => `<option value="${role}" ${member.role === role ? 'selected' : ''}>${labels.role[role]}</option>`).join('')}</select><select class="role-select" data-member-status="${member.id}"><option value="active" ${member.status === 'active' ? 'selected' : ''}>在团队中</option><option value="disabled" ${member.status === 'disabled' ? 'selected' : ''}>暂停团队访问</option></select>` : `<span class="role-select">${labels.role[member.role]}</span>`;
+    return `<article class="member-card"><div class="member-card-head">${avatar(member.name)}${member.status === 'disabled' ? '<span class="status-pill">已暂停</span>' : ''}</div><h3>${escapeHtml(member.name)}</h3><p>${escapeHtml(member.title || member.email)}</p><div class="member-meta"><span>${escapeHtml(member.email)}</span>${controls}</div></article>`;
+  }).join('');
+  $('#content').innerHTML = `<div class="section-head"><div><h2>团队成员</h2><p>管理当前团队的角色与成员状态。密码仅能由用户在 Tona AI Hub 中自行修改。</p></div>${can('team.manage') ? '<button class="btn primary" id="newMember"><span>+</span> 添加已注册账号</button>' : ''}</div><div class="member-grid">${cards}</div>`;
   if ($('#newMember')) $('#newMember').onclick = openMemberForm;
-  $$('[data-member-role]').forEach(select => select.onchange = async () => { try { await api(`/api/users/${select.dataset.memberRole}`, { method: 'PATCH', body: JSON.stringify({ role: select.value }) }); await refresh('team'); toast('成员权限已更新'); } catch(error) { toast(error.message); } });
+  $$('[data-member-role]').forEach(select => select.onchange = async () => { try { await api(`/api/users/${select.dataset.memberRole}`, { method: 'PATCH', body: JSON.stringify({ role: select.value }) }); await refresh('team'); toast('成员角色已更新'); } catch (error) { toast(error.message); } });
+  $$('[data-member-status]').forEach(select => select.onchange = async () => { try { await api(`/api/users/${select.dataset.memberStatus}`, { method: 'PATCH', body: JSON.stringify({ status: select.value }) }); await refresh('team'); toast('团队成员状态已更新'); } catch (error) { toast(error.message); } });
 }
 
 function openModal(html, wide = false) { $('#modalContent').innerHTML = html; $('.modal-card').classList.toggle('wide-modal', wide); $('#modal').classList.remove('hidden'); }
@@ -217,8 +221,8 @@ function openTask(taskId) {
 }
 
 function openMemberForm() {
-  openModal(`<p class="eyebrow">New member</p><h2>添加团队成员</h2><p class="modal-desc">成员登录后即可看到团队工作内容。</p><form id="memberForm" class="form-grid"><label>姓名<input name="name" required></label><label>岗位<input name="title" placeholder="例如：产品设计"></label><label class="full">工作邮箱<input type="email" name="email" required></label><label>角色<select name="role">${options([['member','成员 · 可提需求和更新本人任务'],['admin','管理员 · 可管理需求与任务'],['viewer','只读成员 · 可查看和评论']])}</select></label><label>初始密码<input name="password" placeholder="不填则为 welcome123"></label><div class="modal-actions full"><button type="button" class="btn secondary" data-close>取消</button><button class="btn primary">添加成员</button></div></form>`);
-  $('[data-close]').onclick=closeModal; $('#memberForm').onsubmit=async event=>{event.preventDefault();try{const result=await api('/api/users',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))});closeModal();await refresh('team');toast(result.temporaryPassword ? `成员已添加，初始密码 ${result.temporaryPassword}` : '成员已添加');}catch(error){toast(error.message);}};
+  openModal(`<p class="eyebrow">Existing Hub account</p><h2>添加已注册成员</h2><p class="modal-desc">这里只管理是否加入当前团队，不设置密码。</p><form id="memberForm" class="form-grid"><label class="full">已注册的工作邮箱<input type="email" name="email" required></label><label>团队内岗位<input name="title"></label><label>角色<select name="role">${options([['member','成员'],['admin','管理员'],['viewer','只读成员']])}</select></label><div class="modal-actions full"><button type="button" class="btn secondary" data-close>取消</button><button class="btn primary">加入团队</button></div></form>`);
+  $('[data-close]').onclick = closeModal; $('#memberForm').onsubmit = async event => { event.preventDefault(); try { await api('/api/users', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); closeModal(); await refresh('team'); toast('成员已加入当前团队'); } catch (error) { toast(error.message); } };
 }
 
 function openMilestoneForm(requirementId) {

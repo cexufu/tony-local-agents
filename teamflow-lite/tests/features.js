@@ -19,7 +19,9 @@ async function ready() { for (let i = 0; i < 30; i += 1) { try { await ok('/api/
   try {
     await ready();
     await ok('/api/login', { method: 'POST', body: JSON.stringify({ email: 'admin@team.local', password: 'test-password' }) });
-    const created = await ok('/api/users', { method: 'POST', body: JSON.stringify({ name: 'QA Member', email: 'qa@example.com', title: 'QA', role: 'member', password: 'quality123' }) });
+    const signup = await fetch(`http://127.0.0.1:${port}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'QA Member', email: 'qa@example.com', password: 'quality123', teamName: 'QA Private' }) });
+    if (!signup.ok) throw new Error('Hub account registration failed');
+    const created = await ok('/api/users', { method: 'POST', body: JSON.stringify({ email: 'qa@example.com', title: 'QA', role: 'member' }) });
     const memberId = created.user.id;
     const edited = await ok(`/api/users/${memberId}`, { method: 'PATCH', body: JSON.stringify({ name: 'QA Lead', email: 'qa-lead@example.com', title: 'Quality Lead', role: 'viewer', status: 'active' }) });
     if (edited.user.name !== 'QA Lead' || edited.user.role !== 'viewer') throw new Error('member edit failed');

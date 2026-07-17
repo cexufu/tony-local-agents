@@ -115,7 +115,7 @@ function persistRegistry() { atomicWrite(DB_FILE, registry); }
 function syncAccounts(teamId, teamDb) {
   const activeIds = new Set(teamDb.users.map(user => user.id));
   registry.users.forEach(account => { if (account.teamIds?.includes(teamId) && !activeIds.has(account.id)) account.teamIds = account.teamIds.filter(id => id !== teamId); });
-  teamDb.users.forEach(user => { let account = registry.users.find(item => item.id === user.id); if (!account) { account = { id: user.id, createdAt: user.createdAt || now(), teamIds: [] }; registry.users.push(account); } account.name = user.name || account.name || ''; account.title = user.title || account.title || ''; account.email = user.email; account.passwordHash = user.passwordHash; account.status = user.status || 'active'; account.teamIds = Array.from(new Set([...(account.teamIds || []), teamId])); });
+  teamDb.users.forEach(user => { let account = registry.users.find(item => item.id === user.id); if (!account) { account = { id: user.id, createdAt: user.createdAt || now(), teamIds: [] }; registry.users.push(account); } account.name = user.name || account.name || ''; account.title = user.title || account.title || ''; account.email = user.email; account.passwordHash = user.passwordHash; if (!account.status) account.status = 'active'; account.teamIds = Array.from(new Set([...(account.teamIds || []), teamId])); });
   persistRegistry();
 }
 function saveDb() { const active = teamContext.getStore(); if (!active) return persistRegistry(); syncAccounts(active.teamId, active.db); atomicWrite(teamFile(active.teamId), active.db); }
@@ -313,14 +313,16 @@ async function api(req, res, pathname) {
   if (featureHandled) return;
   if (pathname === '/api/users' && req.method === 'GET') return json(res, 200, { users: db.users.map(publicUser) });
   if (pathname === '/api/users' && req.method === 'POST') {
-    if (!can(user, 'team.manage')) return json(res, 403, { error: '没有成员管理权限' });
-    const body = await readBody(req);
-    if (!clean(body.name) || !/^\S+@\S+\.\S+$/.test(clean(body.email))) return json(res, 400, { error: '请填写姓名和有效邮箱' });
-    if (db.users.some(item => item.email.toLowerCase() === clean(body.email).toLowerCase())) return json(res, 409, { error: '邮箱已存在' });
-    if (!['admin', 'member', 'viewer'].includes(body.role)) return json(res, 400, { error: '角色无效' });
-    const member = { id: id('usr'), name: clean(body.name), email: clean(body.email).toLowerCase(), title: clean(body.title), role: body.role, status: 'active', passwordHash: hashPassword(String(body.password || 'welcome123')), createdAt: now() };
-    db.users.push(member); logActivity(user.id, `添加了成员 ${member.name}`, 'user', member.id); saveDb();
-    return json(res, 201, { user: publicUser(member), temporaryPassword: body.password ? undefined : 'welcome123' });
+    if (!can(user, 'team.manage')) return json(res, 403, { error: 'No member management permission.' });
+    const body = await readBody(req); const email = clean(body.email).toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(email)) return json(res, 400, { error: 'Enter a valid registered email.' });
+    if (db.users.some(item => item.email.toLowerCase() === email)) return json(res, 409, { error: 'This account is already in this team.' });
+    const account = registry.users.find(item => item.email.toLowerCase() === email && item.status === 'active');
+    if (!account) return json(res, 404, { error: 'This user must create a Tona AI Hub account first.' });
+    if (!['admin', 'member', 'viewer'].includes(body.role)) return json(res, 400, { error: 'Invalid team role.' });
+    const member = { id: account.id, name: account.name || email.split('@')[0], email: account.email, title: clean(body.title) || account.title || '', role: body.role, status: 'active', passwordHash: account.passwordHash, createdAt: account.createdAt || now() };
+    db.users.push(member); logActivity(user.id, 'Added an existing Hub account to this team', 'user', member.id); saveDb();
+    return json(res, 201, { user: publicUser(member) });
   }
   const userMatch = pathname.match(/^\/api\/users\/([^/]+)$/);
   if (userMatch && req.method === 'PATCH') {

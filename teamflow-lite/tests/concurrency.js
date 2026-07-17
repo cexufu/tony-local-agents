@@ -11,9 +11,10 @@ async function ready(request) { for (let i = 0; i < 30; i += 1) { try { await re
   const owner = client();
   try {
     await ready(owner); await owner('/api/login', { method: 'POST', body: JSON.stringify({ email: 'admin@team.local', password: 'test-password' }) });
-    for (let i = 1; i <= 3; i += 1) await owner('/api/users', { method: 'POST', body: JSON.stringify({ name: `Concurrent ${i}`, email: `concurrent${i}@example.com`, role: 'admin', password: 'quality123' }) });
+    await owner('/api/settings', { method: 'PATCH', body: JSON.stringify({ teamKey: 'concurrency-invite-code' }) });
+    for (let i = 1; i <= 3; i += 1) { const response = await fetch(`http://127.0.0.1:${port}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: `Concurrent ${i}`, email: `concurrent${i}@example.com`, password: 'quality123', teamName: `Private ${i}` }) }); if (!response.ok) throw new Error('concurrent user registration failed'); }
     const clients = [owner, client(), client(), client()];
-    await Promise.all(clients.slice(1).map((request, i) => request('/api/login', { method: 'POST', body: JSON.stringify({ email: `concurrent${i + 1}@example.com`, password: 'quality123' }) })));
+    await Promise.all(clients.slice(1).map(async (request, i) => { await request('/api/login', { method: 'POST', body: JSON.stringify({ email: `concurrent${i + 1}@example.com`, password: 'quality123' }) }); await request('/api/hub/team-access', { method: 'POST', body: JSON.stringify({ teamKey: 'concurrency-invite-code' }) }); }));
     const writes = clients.flatMap((request, userIndex) => Array.from({ length: 10 }, (_, itemIndex) => request('/api/requirements', { method: 'POST', body: JSON.stringify({ title: `Concurrent requirement ${userIndex}-${itemIndex}`, summary: 'Concurrent persistence test', priority: 'P2', type: 'feature' }) })));
     await Promise.all(writes);
     const result = await owner('/api/requirements');

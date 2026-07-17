@@ -74,8 +74,6 @@ async function handleFeatureApi(ctx) {
     if (body.role && ['admin','member','viewer'].includes(body.role)) member.role = body.role;
     if (body.status && ['active','disabled'].includes(body.status) && member.id !== user.id && member.role !== 'owner') member.status = body.status;
     if (body.title !== undefined) member.title = clean(body.title);
-    if (clean(body.password) && String(body.password).length < 8) { json(res, 400, { error: '\u65b0\u5bc6\u7801\u81f3\u5c11 8 \u4f4d' }); return true; }
-    if (clean(body.password)) member.passwordHash = hashPassword(String(body.password));
     logActivity(user.id, `Updated member ${member.name}`, 'user', member.id); saveDb();
     json(res, 200, { user: publicUser(member) }); return true;
   }
