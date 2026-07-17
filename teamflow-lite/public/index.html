@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#17251e">
+  <meta name="application-name" content="TeamFlow">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="TeamFlow">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+  <title>TeamFlow · 团队协作</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="enhancements.css">
+  <link rel="stylesheet" href="pwa.css">
+</head>
+<body>
+  <div id="toast" class="toast" role="status"></div>
+  <main id="loginView" class="login-view">
+    <section class="login-story">
+      <div class="brand brand-light"><span class="brand-mark">T</span><span>TeamFlow</span></div>
+      <div class="story-copy">
+        <span class="eyebrow">轻量团队协作</span>
+        <h1>让每个需求，<br>都有清晰的下一步。</h1>
+        <p>成员、权限、需求、任务和时间节点，放在一个团队真正会用的地方。</p>
+      </div>
+      <div class="story-proof"><span>需求提出</span><i></i><span>拆解排期</span><i></i><span>跟进交付</span></div>
+    </section>
+    <section class="login-panel">
+      <form id="loginForm" class="login-card">
+        <div class="mobile-brand brand"><span class="brand-mark">T</span><span>TeamFlow</span></div>
+        <p class="eyebrow">欢迎回来</p>
+        <h2>登录团队空间</h2>
+        <p class="muted">使用团队账号继续</p>
+        <label>工作邮箱<input name="email" type="email" value="admin@team.local" required autocomplete="email"></label>
+        <label>密码<input name="password" type="password" value="teamflow123" required autocomplete="current-password"></label>
+        <button class="btn primary wide" type="submit">进入工作台 <span>→</span></button>
+        <p class="login-hint">初始负责人账号：admin@team.local / teamflow123</p>
+      </form>
+    </section>
+  </main>
+
+  <div id="appView" class="app-view hidden">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">T</span><span>TeamFlow</span></div>
+      <nav id="nav">
+        <button data-page="dashboard" class="active"><span data-icon="home"></span>总览</button>
+        <button data-page="requirements"><span data-icon="layers"></span>产品需求</button>
+        <button data-page="tasks"><span data-icon="check"></span>团队任务</button>
+        <button data-page="team"><span data-icon="users"></span>团队成员</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <button id="settingsBtn" class="nav-secondary"><span data-icon="settings"></span>团队设置</button>
+        <div id="userCard" class="user-card"></div>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <button id="menuBtn" class="icon-btn mobile-only" aria-label="菜单"><span data-icon="menu"></span></button>
+        <div><p id="teamLabel" class="team-label"></p><h1 id="pageTitle">工作总览</h1></div>
+        <div class="top-actions">
+          <button id="reminderBtn" class="icon-btn badge-wrap" aria-label="提醒"><span data-icon="bell"></span><b id="reminderBadge" class="badge hidden">0</b></button>
+          <button id="globalCreateBtn" class="btn primary"><span>＋</span> 新建需求</button>
+        </div>
+      </header>
+      <main id="content" class="content"></main>
+    </div>
+  </div>
+
+  <div id="modal" class="modal hidden" aria-modal="true" role="dialog">
+    <div class="modal-backdrop" data-close-modal></div>
+    <section class="modal-card">
+      <button class="modal-close" data-close-modal aria-label="关闭">×</button>
+      <div id="modalContent"></div>
+    </section>
+  </div>
+  <script src="app.js"></script>
+  <script src="enhancements.js"></script>
+  <script src="pwa.js"></script>
+</body>
+</html>

@@ -1,27 +1,27 @@
 services:
   - type: web
-    name: tona-agent-studio
+    name: teamflow-lite
     runtime: node
     plan: starter
     buildCommand: npm install
     startCommand: npm start
-    healthCheckPath: /gateway/health
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
       - key: DATA_DIR
         value: /var/data
-      - key: TEAMFLOW_DATA_DIR
-        value: /var/data/teamflow
-      - key: TEAMFLOW_INITIAL_ADMIN_PASSWORD
+      - key: INITIAL_ADMIN_PASSWORD
+        generateValue: true
+      - key: FEISHU_REMINDER_WEBHOOK
         sync: false
-      - key: TEAMFLOW_FEISHU_REMINDER_WEBHOOK
+      - key: APP_PUBLIC_URL
         sync: false
       - key: REMINDER_TIMEZONE
         value: Asia/Shanghai
       - key: REMINDER_HOUR
         value: 9
     disk:
-      name: tona-agent-data
+      name: teamflow-data
       mountPath: /var/data
       sizeGB: 1

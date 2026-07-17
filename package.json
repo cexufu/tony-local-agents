@@ -1,10 +1,14 @@
 {
   "name": "tona-agent-studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "A local, no-code multi-model agent studio for personal AI workflows.",
+  "description": "TONA Agent Studio with an integrated TeamFlow workspace.",
   "scripts": {
-    "start": "node server.js"
+    "start": "node gateway.js",
+    "start:tona": "node server.js",
+    "start:teamflow": "node teamflow-lite/server.js",
+    "check": "node --check gateway.js && node --check server.js && npm --prefix teamflow-lite run check",
+    "test": "npm --prefix teamflow-lite test && node tests/gateway-smoke.js"
   },
   "engines": {
     "node": ">=18"
