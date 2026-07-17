@@ -193,6 +193,24 @@ async function api(req, res, pathname) {
   const user = getUser(req);
   if (!user) return json(res, 401, { error: '请先登录' });
   if (pathname === '/api/me') return json(res, 200, { user: publicUser(user), settings: db.settings });
+  if (pathname === '/api/hub') return json(res, 200, {
+    user: publicUser(user),
+    aiStudioUrl: process.env.AI_STUDIO_PUBLIC_URL || '/',
+    teamflowUrl: process.env.APP_PUBLIC_URL || '/teamflow/',
+    teamKeyRequired: Boolean(db.settings.teamKey)
+  });
+  if (pathname === '/api/hub/team-access' && req.method === 'POST') {
+    const body = await readBody(req);
+    const supplied = clean(body.teamKey);
+    const expected = String(db.settings.teamKey || '');
+    if (expected && (supplied.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected)))) {
+      return json(res, 403, { error: 'Team Key invalid.' });
+    }
+    const token = parseCookies(req).teamflow_session;
+    const session = sessions.get(token);
+    if (session) session.teamAccess = true;
+    return json(res, 200, { ok: true });
+  }
   if (pathname === '/api/dashboard') return json(res, 200, dashboard());
   const featureHandled = await handleFeatureApi({ req, res, pathname, user, db, json, readBody, can, clean, id, now, dateOnly, hashPassword, publicUser, enrichRequirement, logActivity, saveDb, reminderEngine });
   if (featureHandled) return;
@@ -289,6 +307,7 @@ async function api(req, res, pathname) {
     const body = await readBody(req);
     if (body.teamName) db.settings.teamName = clean(body.teamName);
     if (body.reminderDays !== undefined) db.settings.reminderDays = Math.max(1, Math.min(30, Number(body.reminderDays) || 2));
+    if (body.teamKey !== undefined) db.settings.teamKey = clean(body.teamKey);
     saveDb(); return json(res, 200, { settings: db.settings });
   }
   return json(res, 404, { error: '接口不存在' });

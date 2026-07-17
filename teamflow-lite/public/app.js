@@ -69,7 +69,12 @@ async function loadCore() {
 async function init() {
   hydrateIcons();
   try {
-    await loadCore(); showApp(); navigate('dashboard');
+    await loadCore();
+    if (!new URLSearchParams(location.search).has('teamflow')) {
+      location.replace(APP_BASE + '/hub.html');
+      return;
+    }
+    showApp(); navigate('dashboard');
   } catch { $('#loginView').classList.remove('hidden'); }
 }
 
@@ -80,7 +85,7 @@ $('#loginForm').addEventListener('submit', async event => {
   event.preventDefault(); const button = event.currentTarget.querySelector('button'); button.disabled = true; button.textContent = '正在登录…';
   try {
     await api('/api/login', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) });
-    await loadCore(); showApp(); navigate('dashboard'); toast('欢迎回来');
+    await loadCore(); location.replace(APP_BASE + '/hub.html'); return; toast('欢迎回来');
   } catch (error) { toast(error.message); }
   finally { button.disabled = false; button.innerHTML = '进入工作台 <span>→</span>'; }
 });
@@ -223,7 +228,7 @@ function openMilestoneForm(requirementId) {
 
 function openSettings() {
   if (!can('settings.manage')) return toast('仅团队负责人可以修改设置');
-  openModal(`<p class="eyebrow">Team settings</p><h2>团队设置</h2><p class="modal-desc">配置团队名称和到期提醒范围。</p><form id="settingsForm" class="form-grid"><label class="full">团队名称<input name="teamName" value="${escapeHtml(state.settings.teamName)}"></label><label class="full">提前提醒天数<input type="number" min="1" max="30" name="reminderDays" value="${state.settings.reminderDays}"></label><div class="modal-actions full"><button type="button" class="btn secondary" data-close>取消</button><button class="btn primary">保存设置</button></div></form>`);
+  openModal(`<p class="eyebrow">Team settings</p><h2>团队设置</h2><p class="modal-desc">配置团队名称和到期提醒范围。</p><form id="settingsForm" class="form-grid"><label class="full">团队名称<input name="teamName" value="${escapeHtml(state.settings.teamName)}"></label><label class="full">提前提醒天数<input type="number" min="1" max="30" name="reminderDays" value="${state.settings.reminderDays}"></label><label class="full">Team Key<input name="teamKey" value="${escapeHtml(state.settings.teamKey || '')}" placeholder="&#30041;&#31354;&#34920;&#31034;&#19981;&#38480;&#21046;&#36827;&#20837;"></label><div class="modal-actions full"><button type="button" class="btn secondary" data-close>取消</button><button class="btn primary">保存设置</button></div></form>`);
   $('[data-close]').onclick=closeModal; $('#settingsForm').onsubmit=async event=>{event.preventDefault();try{await api('/api/settings',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))});closeModal();await refresh(state.page);toast('设置已保存');}catch(error){toast(error.message);}};
 }
 

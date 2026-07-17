@@ -3,13 +3,19 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { execFile } = require("child_process");
+const { AsyncLocalStorage } = require("async_hooks");
 
 const PORT = Number(process.env.PORT || 7357);
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
-const RUNS_DIR = path.join(DATA_DIR, "runs");
-const DB_PATH = path.join(DATA_DIR, "studio.json");
+const ROOT_RUNS_DIR = path.join(DATA_DIR, "runs");
+const ROOT_DB_PATH = path.join(DATA_DIR, "studio.json");
+const WORKSPACES_DIR = path.join(DATA_DIR, "workspaces");
+const workspaceContext = new AsyncLocalStorage();
+const HUB_AUTH_REQUIRED = process.env.TONA_HUB_AUTH_REQUIRED === "true";
+const TEAMFLOW_INTERNAL_PORT = Number(process.env.TEAMFLOW_INTERNAL_PORT || 7359);
+const LEGACY_OWNER_ID = process.env.TONA_LEGACY_OWNER_ID || "usr_owner";
 const ERROR_LOG_PATH = path.join(DATA_DIR, "tona-server-error.log");
 function logServerError(error) {
   try {
@@ -260,22 +266,40 @@ function createInitialDb() {
   return db;
 }
 
+function activeWorkspaceId() {
+  const workspaceId = workspaceContext.getStore()?.workspaceId || "";
+  return /^[a-zA-Z0-9_-]{3,80}$/.test(workspaceId) ? workspaceId : "";
+}
+
+function storagePaths() {
+  const workspaceId = activeWorkspaceId();
+  if (!workspaceId) return { dbPath: ROOT_DB_PATH, runsDir: ROOT_RUNS_DIR };
+  const directory = path.join(WORKSPACES_DIR, workspaceId);
+  return { dbPath: path.join(directory, "studio.json"), runsDir: path.join(directory, "runs") };
+}
+
 function ensureStore() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.mkdirSync(RUNS_DIR, { recursive: true });
-  if (!fs.existsSync(DB_PATH)) {
-    fs.writeFileSync(DB_PATH, JSON.stringify(createInitialDb(), null, 2));
+  const { dbPath, runsDir } = storagePaths();
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  fs.mkdirSync(runsDir, { recursive: true });
+  if (!fs.existsSync(dbPath)) {
+    const workspaceId = activeWorkspaceId();
+    if (workspaceId === LEGACY_OWNER_ID && fs.existsSync(ROOT_DB_PATH)) {
+      fs.copyFileSync(ROOT_DB_PATH, dbPath);
+    } else {
+      fs.writeFileSync(dbPath, JSON.stringify(createInitialDb(), null, 2));
+    }
   }
 }
 
 function readDb() {
   ensureStore();
-  return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
+  return JSON.parse(fs.readFileSync(storagePaths().dbPath, "utf8"));
 }
 
 function writeDb(db) {
   ensureStore();
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+  fs.writeFileSync(storagePaths().dbPath, JSON.stringify(db, null, 2));
 }
 
 function publicDb(db) {
@@ -593,7 +617,7 @@ async function runWorkflow(body) {
     finalOutput,
     errors
   };
-  fs.writeFileSync(path.join(RUNS_DIR, `${runId}.json`), JSON.stringify(run, null, 2));
+  fs.writeFileSync(path.join(storagePaths().runsDir, `${runId}.json`), JSON.stringify(run, null, 2));
   return run;
 }
 
@@ -607,8 +631,21 @@ function normalizeLarkBot(bot = {}) {
     verificationToken: String(bot.verificationToken || "").trim(),
     encryptKey: String(bot.encryptKey || "").trim(),
     publicCallbackUrl: String(bot.publicCallbackUrl || "").trim(),
+    callbackWorkspaceId: String(bot.callbackWorkspaceId || "").trim(),
     enabled: coerceBoolean(bot.enabled, true)
   };
+}
+
+function publicFeishuCallbackUrl(req) {
+  const workspaceId = activeWorkspaceId();
+  const host = req.headers["x-forwarded-host"] || req.headers.host || "";
+  if (!workspaceId || !host) return "";
+  const proto = req.headers["x-forwarded-proto"] || (process.env.NODE_ENV === "production" ? "https" : "http");
+  return proto + "://" + host + "/feishu/events/" + encodeURIComponent(workspaceId);
+}
+
+function larkEventLogDir() {
+  return path.join(path.dirname(storagePaths().dbPath), "lark_events");
 }
 
 function larkBotToAppSettings(bot) {
@@ -753,10 +790,10 @@ async function sendLarkWebhook(settings, text) {
 
 function listRuns() {
   ensureStore();
-  return fs.readdirSync(RUNS_DIR)
+  return fs.readdirSync(storagePaths().runsDir)
     .filter((file) => file.endsWith(".json"))
     .map((file) => {
-      const run = JSON.parse(fs.readFileSync(path.join(RUNS_DIR, file), "utf8"));
+      const run = JSON.parse(fs.readFileSync(path.join(storagePaths().runsDir, file), "utf8"));
       return {
         id: run.id,
         workflowName: run.workflowName,
@@ -982,7 +1019,7 @@ function summarizeFeishuEventLog(entry, errorText = "") {
 }
 
 function listLarkEventLogs(limit = 30) {
-  const eventLogDir = path.join(DATA_DIR, "lark_events");
+  const eventLogDir = larkEventLogDir();
   if (!fs.existsSync(eventLogDir)) return [];
   return fs.readdirSync(eventLogDir)
     .filter((file) => file.endsWith(".json"))
@@ -1057,7 +1094,7 @@ async function handleFeishuEvent(req, res) {
       }
       return sendJson(res, 200, { challenge: eventBody.challenge });
     }
-    const eventLogDir = path.join(DATA_DIR, "lark_events");
+    const eventLogDir = larkEventLogDir();
     fs.mkdirSync(eventLogDir, { recursive: true });
     logId = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14) + "_" + crypto.randomUUID().slice(0, 8);
     fs.writeFileSync(path.join(eventLogDir, logId + ".json"), JSON.stringify({
@@ -1080,7 +1117,28 @@ async function handleFeishuEvent(req, res) {
   }
 }
 
+async function resolveHubUser(req) {
+  if (!HUB_AUTH_REQUIRED) return null;
+  const cookie = String(req.headers.cookie || "");
+  if (!cookie) return null;
+  try {
+    const response = await fetch("http://127.0.0.1:" + TEAMFLOW_INTERNAL_PORT + "/api/me", { headers: { Cookie: cookie } });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload.user || null;
+  } catch {
+    return null;
+  }
+}
+
 async function handleApi(req, res, pathname) {
+  const hubUser = await resolveHubUser(req);
+  if (HUB_AUTH_REQUIRED && !hubUser) return sendJson(res, 401, { error: "Sign in to Tona AI Hub first." });
+  const workspaceId = hubUser?.id || "";
+  return workspaceContext.run({ workspaceId }, () => handleApiInWorkspace(req, res, pathname));
+}
+
+async function handleApiInWorkspace(req, res, pathname) {
   try {
 
     if (req.method === "GET" && pathname === "/api/diagnose") {
@@ -1149,6 +1207,8 @@ async function handleApi(req, res, pathname) {
       const source = existing ? { ...existing, ...body } : { ...body, id: "" };
       const bot = normalizeLarkBot({
         ...source,
+        callbackWorkspaceId: activeWorkspaceId(),
+        publicCallbackUrl: body.publicCallbackUrl || existing?.publicCallbackUrl || publicFeishuCallbackUrl(req),
         appSecret: body.appSecret && !String(body.appSecret).includes("*") ? body.appSecret : existing?.appSecret || "",
         verificationToken: body.verificationToken && !String(body.verificationToken).includes("*") ? body.verificationToken : existing?.verificationToken || "",
         encryptKey: body.encryptKey && !String(body.encryptKey).includes("*") ? body.encryptKey : existing?.encryptKey || ""
@@ -1241,6 +1301,10 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (req.method === "GET" && (url.pathname === "/gateway/health" || url.pathname === "/api/health")) {
     return sendJson(res, 200, { ok: true, service: "tona-agent-studio" });
+  }
+  const scopedEvent = url.pathname.match(/^\/feishu\/events\/([A-Za-z0-9_-]{3,80})$/);
+  if (scopedEvent) {
+    return workspaceContext.run({ workspaceId: scopedEvent[1] }, () => handleFeishuEvent(req, res));
   }
   if (url.pathname === "/feishu/events") {
     handleFeishuEvent(req, res);

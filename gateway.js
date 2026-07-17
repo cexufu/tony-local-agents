@@ -15,6 +15,8 @@ function childEnvironment(name, port) {
   const env = { ...process.env, PORT: String(port) };
   if (name === 'tona') {
     env.DATA_DIR = DATA_DIR;
+    env.TONA_HUB_AUTH_REQUIRED = 'true';
+    env.TEAMFLOW_INTERNAL_PORT = String(TEAMFLOW_PORT);
   } else {
     env.DATA_DIR = TEAMFLOW_DATA_DIR;
     env.INITIAL_ADMIN_PASSWORD = process.env.TEAMFLOW_INITIAL_ADMIN_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD || 'teamflow123';
@@ -45,9 +47,6 @@ function proxy(req, res, { port, stripPrefix = '' }) {
   delete headers.connection;
   const upstream = http.request({ hostname: '127.0.0.1', port, method: req.method, path: targetPath, headers }, upstreamResponse => {
     const responseHeaders = { ...upstreamResponse.headers };
-    if (stripPrefix && responseHeaders['set-cookie']) {
-      responseHeaders['set-cookie'] = responseHeaders['set-cookie'].map(cookie => cookie.replace(/Path=\//i, `Path=${stripPrefix}/`));
-    }
     res.writeHead(upstreamResponse.statusCode || 502, responseHeaders);
     upstreamResponse.pipe(res);
   });

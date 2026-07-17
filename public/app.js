@@ -16,6 +16,7 @@ async function api(path, options = {}) {
     ...options
   });
   const payload = await response.json();
+  if (response.status === 401) { window.location.href = "/teamflow/"; throw new Error("Sign in required."); }
   if (!response.ok || payload.error) throw new Error(payload.error || "Request failed.");
   return payload;
 }

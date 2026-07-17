@@ -34,13 +34,17 @@ async function waitForHealth() {
     const login = await fetch(`http://127.0.0.1:${port}/teamflow/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@team.local', password: 'test-password' }) });
     if (!login.ok) throw new Error(`TeamFlow login failed: ${login.status}`);
     const cookieHeader = login.headers.get('set-cookie') || '';
-    if (!/Path=\/teamflow\//i.test(cookieHeader)) throw new Error(`cookie path was not isolated: ${cookieHeader}`);
+    if (!/Path=\//i.test(cookieHeader)) throw new Error(`Hub session cookie was not shared: ${cookieHeader}`);
     const cookie = cookieHeader.split(';')[0];
     const me = await fetch(`http://127.0.0.1:${port}/teamflow/api/me`, { headers: { Cookie: cookie } });
     if (!me.ok || (await me.json()).user.role !== 'owner') throw new Error('TeamFlow authenticated proxy failed');
-    if (!fs.existsSync(path.join(dataDir, 'studio.json'))) throw new Error('TONA data was not stored in original data root');
+    const studioUnauthed = await fetch(`http://127.0.0.1:${port}/api/state`);
+    if (studioUnauthed.status !== 401) throw new Error('AI Studio allowed an unauthenticated request');
+    const studio = await fetch(`http://127.0.0.1:${port}/api/state`, { headers: { Cookie: cookie } });
+    if (!studio.ok || !(await studio.json()).agents) throw new Error('AI Studio Hub authentication failed');
+    if (!fs.existsSync(path.join(dataDir, 'workspaces', 'usr_owner', 'studio.json'))) throw new Error('AI Studio workspace data was not created');
     if (!fs.existsSync(path.join(dataDir, 'teamflow', 'teamflow.json'))) throw new Error('TeamFlow data was not isolated');
-    console.log('Gateway test passed: TONA root, TeamFlow subpath, isolated cookie, auth, PWA and separate data');
+    console.log('Gateway test passed: Tona AI Hub session, TeamFlow subpath, AI Studio auth and separate workspace data');
   } finally {
     gateway.kill('SIGTERM');
     await new Promise(resolve => setTimeout(resolve, 500));
