@@ -120,6 +120,23 @@ function syncAccounts(teamId, teamDb) {
 }
 function saveDb() { const active = teamContext.getStore(); if (!active) return persistRegistry(); syncAccounts(active.teamId, active.db); atomicWrite(teamFile(active.teamId), active.db); }
 const db = new Proxy({}, { get(_target, key) { return currentTeamDb()[key]; }, set(_target, key, value) { currentTeamDb()[key] = value; return true; } });
+function applyOneTimeAdminReset() {
+  const password = String(process.env.TEAMFLOW_ADMIN_RESET_PASSWORD || '');
+  if (!password) return;
+  if (password.length < 12) throw new Error('TEAMFLOW_ADMIN_RESET_PASSWORD must be at least 12 characters.');
+  const account = registry.users.find(user => user.email === 'admin@team.local');
+  if (!account) { console.warn('Admin reset skipped: admin@team.local does not exist.'); return; }
+  const passwordHash = hashPassword(password);
+  account.passwordHash = passwordHash;
+  for (const teamId of account.teamIds || []) {
+    const team = loadTeamDb(teamId);
+    const member = team.users.find(user => user.id === account.id);
+    if (member) { member.passwordHash = passwordHash; atomicWrite(teamFile(teamId), team); }
+  }
+  persistRegistry();
+  console.warn('Admin password reset applied. Remove TEAMFLOW_ADMIN_RESET_PASSWORD and redeploy immediately.');
+}
+applyOneTimeAdminReset();
 
 const reminderEngine = createReminderEngine({ getDb: () => db, saveDb });
 
