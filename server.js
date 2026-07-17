@@ -1,4 +1,4 @@
-﻿const http = require("http");
+const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
@@ -800,18 +800,13 @@ function parseFeishuDecryptedBuffer(buffer) {
 function decryptFeishuPayload(encrypt, encryptKey) {
   if (!encryptKey) throw new Error("Encrypted Feishu event received, but Encrypt Key is not configured in TONA.");
   const key = crypto.createHash("sha256").update(encryptKey).digest();
-  const ivs = [Buffer.alloc(16, 0), key.subarray(0, 16)];
-  let lastError = null;
-  for (const iv of ivs) {
-    try {
-      const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
-      const decrypted = Buffer.concat([decipher.update(Buffer.from(encrypt, "base64")), decipher.final()]);
-      return parseFeishuDecryptedBuffer(decrypted);
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError || new Error("Failed to decrypt Feishu event.");
+  const encrypted = Buffer.from(encrypt, "base64");
+  if (encrypted.length <= 16) throw new Error("Encrypted Feishu event payload is too short.");
+  const iv = encrypted.subarray(0, 16);
+  const ciphertext = encrypted.subarray(16);
+  const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
+  const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  return parseFeishuDecryptedBuffer(decrypted);
 }
 
 async function getFeishuTenantToken(settings) {
