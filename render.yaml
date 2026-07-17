@@ -15,8 +15,6 @@ services:
         value: /var/data/teamflow
       - key: TEAMFLOW_INITIAL_ADMIN_PASSWORD
         sync: false
-      - key: TEAMFLOW_FEISHU_REMINDER_WEBHOOK
-        sync: false
       - key: REMINDER_TIMEZONE
         value: Asia/Shanghai
       - key: REMINDER_HOUR
