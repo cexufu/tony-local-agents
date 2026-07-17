@@ -97,7 +97,7 @@ function migrateRegistry(raw) {
   const team = initialTeamData(raw, teamId);
   fs.mkdirSync(TEAMS_DIR, { recursive: true });
   if (!fs.existsSync(teamFile(teamId))) atomicWrite(teamFile(teamId), team);
-  return { meta: { version: 2, createdAt: raw.meta?.createdAt || now(), migratedAt: now(), migration: 'TEAMFLOW_MULTITENANT_V1' }, users: (raw.users || []).map(user => ({ id: user.id, email: user.email, passwordHash: user.passwordHash, status: user.status || 'active', teamIds: [teamId], createdAt: user.createdAt || now() })), teams: [{ id: teamId, createdAt: now() }] };
+  return { meta: { version: 2, createdAt: raw.meta?.createdAt || now(), migratedAt: now(), migration: 'TEAMFLOW_MULTITENANT_V1' }, users: (raw.users || []).map(user => ({ id: user.id, name: user.name || '', title: user.title || '', email: user.email, passwordHash: user.passwordHash, status: user.status || 'active', teamIds: [teamId], lastTeamId: teamId, createdAt: user.createdAt || now() })), teams: [{ id: teamId, createdAt: now() }] };
 }
 
 function loadDb() {
@@ -115,7 +115,7 @@ function persistRegistry() { atomicWrite(DB_FILE, registry); }
 function syncAccounts(teamId, teamDb) {
   const activeIds = new Set(teamDb.users.map(user => user.id));
   registry.users.forEach(account => { if (account.teamIds?.includes(teamId) && !activeIds.has(account.id)) account.teamIds = account.teamIds.filter(id => id !== teamId); });
-  teamDb.users.forEach(user => { let account = registry.users.find(item => item.id === user.id); if (!account) { account = { id: user.id, createdAt: user.createdAt || now(), teamIds: [] }; registry.users.push(account); } account.email = user.email; account.passwordHash = user.passwordHash; account.status = user.status || 'active'; account.teamIds = Array.from(new Set([...(account.teamIds || []), teamId])); });
+  teamDb.users.forEach(user => { let account = registry.users.find(item => item.id === user.id); if (!account) { account = { id: user.id, createdAt: user.createdAt || now(), teamIds: [] }; registry.users.push(account); } account.name = user.name || account.name || ''; account.title = user.title || account.title || ''; account.email = user.email; account.passwordHash = user.passwordHash; account.status = user.status || 'active'; account.teamIds = Array.from(new Set([...(account.teamIds || []), teamId])); });
   persistRegistry();
 }
 function saveDb() { const active = teamContext.getStore(); if (!active) return persistRegistry(); syncAccounts(active.teamId, active.db); atomicWrite(teamFile(active.teamId), active.db); }
@@ -156,7 +156,7 @@ function sessionFor(req) {
 function getUser(req) {
   const session = sessionFor(req); if (!session) return null;
   const account = registry.users.find(item => item.id === session.userId && item.status === 'active'); if (!account) return null;
-  const teamId = session.teamId || account.teamIds?.[0]; if (!teamId || !account.teamIds?.includes(teamId)) return null;
+  const teamId = session.teamId || account.lastTeamId || account.teamIds?.[0]; if (!teamId || !account.teamIds?.includes(teamId)) return null;
   const member = loadTeamDb(teamId).users.find(user => user.id === account.id && user.status === 'active'); return member ? { ...member, _teamId: teamId } : null;
 }
 
@@ -238,7 +238,7 @@ async function api(req, res, pathname) {
     const account = registry.users.find(item => item.email.toLowerCase() === clean(body.email).toLowerCase());
     if (!account || account.status !== 'active' || !verifyPassword(String(body.password || ''), account.passwordHash)) return json(res, 401, { error: '邮箱或密码不正确' });
     const token = crypto.randomBytes(24).toString('hex');
-    const teamId = account.teamIds?.[0];
+    const teamId = account.lastTeamId || account.teamIds?.[0];
     if (!teamId) return json(res, 403, { error: 'No TeamFlow workspace is assigned to this account.' });
     const user = loadTeamDb(teamId).users.find(item => item.id === account.id);
     sessions.set(token, { userId: account.id, teamId, expiresAt: Date.now() + 7 * 86400000 });
@@ -251,7 +251,7 @@ async function api(req, res, pathname) {
     const user = { id: id('usr'), name, email, role: 'owner', title: clean(body.title), status: 'active', passwordHash: hashPassword(password), createdAt: now() }; const teamId = id('team');
     const team = initialTeamData({ settings: { teamName: clean(body.teamName) || (name + "'s Team"), reminderDays: 2 }, users: [user], requirements: [], tasks: [], milestones: [], comments: [], activities: [] }, teamId);
     team.activities.unshift({ id: id('act'), actorId: user.id, action: 'Created this private TeamFlow workspace', targetType: 'team', targetId: teamId, createdAt: now() });
-    registry.users.push({ id: user.id, email, passwordHash: user.passwordHash, status: 'active', teamIds: [teamId], createdAt: user.createdAt }); registry.teams.push({ id: teamId, createdAt: now() }); persistRegistry(); atomicWrite(teamFile(teamId), team); teamCache.set(teamId, team);
+    registry.users.push({ id: user.id, name, title: user.title, email, passwordHash: user.passwordHash, status: 'active', teamIds: [teamId], lastTeamId: teamId, createdAt: user.createdAt }); registry.teams.push({ id: teamId, createdAt: now() }); persistRegistry(); atomicWrite(teamFile(teamId), team); teamCache.set(teamId, team);
     const token = crypto.randomBytes(24).toString('hex'); sessions.set(token, { userId: user.id, teamId, expiresAt: Date.now() + 7 * 86400000 });
     const cookie = 'teamflow_session=' + token + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800' + (process.env.NODE_ENV === 'production' ? '; Secure' : '');
     return json(res, 201, { user: publicUser(user), teamId }, { 'Set-Cookie': cookie });
@@ -265,24 +265,35 @@ async function api(req, res, pathname) {
   if (!user) return json(res, 401, { error: '请先登录' });
   return teamContext.run({ teamId: user._teamId, db: loadTeamDb(user._teamId) }, async () => {
   if (pathname === '/api/me') return json(res, 200, { user: publicUser(user), settings: db.settings });
-  if (pathname === '/api/hub') return json(res, 200, {
-    user: publicUser(user),
-    aiStudioUrl: process.env.AI_STUDIO_PUBLIC_URL || '/',
-    teamflowUrl: process.env.APP_PUBLIC_URL || '/teamflow/',
-    teamKeyRequired: Boolean(db.settings.teamKeyHash || db.settings.teamKey)
-  });
+  // TEAMFLOW_GROUP_INVITE_V1: an account owns a private workspace and may join shared groups by invite code.
+  if (pathname === '/api/hub') {
+    const account = registry.users.find(item => item.id === user.id);
+    const teams = (account?.teamIds || []).map(teamId => { const team = loadTeamDb(teamId); return { id: teamId, name: team.settings.teamName || 'TeamFlow Team', active: teamId === user._teamId }; });
+    return json(res, 200, { user: publicUser(user), aiStudioUrl: process.env.AI_STUDIO_PUBLIC_URL || '/', teamflowUrl: process.env.APP_PUBLIC_URL || '/teamflow/', teams });
+  }
   if (pathname === '/api/hub/team-access' && req.method === 'POST') {
-    const body = await readBody(req);
-    const supplied = clean(body.teamKey);
-    const expectedHash = String(db.settings.teamKeyHash || '');
-    const legacyExpected = String(db.settings.teamKey || '');
-    const accepted = expectedHash ? verifyPassword(supplied, expectedHash) : (!legacyExpected || (supplied.length === legacyExpected.length && crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(legacyExpected))));
-    if (!accepted) {
-      return json(res, 403, { error: 'Team Key invalid.' });
+    const body = await readBody(req); const supplied = clean(body.teamKey);
+    if (!supplied) return json(res, 400, { error: 'Enter an invitation code.' });
+    let targetId = '';
+    for (const entry of registry.teams || []) {
+      const candidate = loadTeamDb(entry.id); const stored = String(candidate.settings.teamKeyHash || ''); const legacy = String(candidate.settings.teamKey || '');
+      if ((stored && verifyPassword(supplied, stored)) || (!stored && legacy && supplied.length === legacy.length && crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(legacy)))) { targetId = entry.id; break; }
     }
-    const token = parseCookies(req).teamflow_session;
-    const session = sessions.get(token);
-    if (session) session.teamAccess = true;
+    if (!targetId) return json(res, 403, { error: 'Invitation code is invalid.' });
+    const account = registry.users.find(item => item.id === user.id); const target = loadTeamDb(targetId);
+    if (!target.users.some(member => member.id === user.id)) {
+      target.users.push({ id: account.id, name: account.name || user.name || account.email.split('@')[0], email: account.email, role: 'member', title: account.title || '', status: 'active', passwordHash: account.passwordHash, createdAt: account.createdAt || now() });
+      target.activities.unshift({ id: id('act'), actorId: account.id, action: 'Joined this team with an invitation code', targetType: 'team', targetId, createdAt: now() });
+      atomicWrite(teamFile(targetId), target); teamCache.set(targetId, target);
+    }
+    account.teamIds = Array.from(new Set([...(account.teamIds || []), targetId])); account.lastTeamId = targetId; persistRegistry();
+    const token = parseCookies(req).teamflow_session; const session = sessions.get(token); if (session) { session.teamId = targetId; session.teamAccess = true; }
+    return json(res, 200, { ok: true, team: { id: targetId, name: target.settings.teamName || 'TeamFlow Team' } });
+  }
+  if (pathname === '/api/hub/select-team' && req.method === 'POST') {
+    const body = await readBody(req); const account = registry.users.find(item => item.id === user.id); const targetId = clean(body.teamId);
+    if (!account?.teamIds?.includes(targetId)) return json(res, 403, { error: 'You do not belong to this team.' });
+    account.lastTeamId = targetId; persistRegistry(); const token = parseCookies(req).teamflow_session; const session = sessions.get(token); if (session) session.teamId = targetId;
     return json(res, 200, { ok: true });
   }
   if (pathname === '/api/dashboard') return json(res, 200, dashboard());
