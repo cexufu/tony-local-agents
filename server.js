@@ -346,7 +346,7 @@ function writeDb(db) {
 
 function publicDb(db) {
   const settings = db.settings || {};
-  const { collaborationTasks, ...safeSettings } = settings;
+  const { collaborationTasks, groupKnowledge, ...safeSettings } = settings;
   return {
     ...db,
     providers: db.providers.map((provider) => ({
@@ -393,6 +393,36 @@ function incomingSecretValue(value, existing) {
 
 const COLLABORATION_MAX_PARTICIPANTS = 5;
 const COLLABORATION_MAX_MESSAGES = 10;
+const GROUP_KNOWLEDGE_MAX_PER_CHAT = 500;
+const GROUP_KNOWLEDGE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+function groupKnowledgeEntries(db) {
+  db.settings ||= {};
+  db.settings.groupKnowledge = Array.isArray(db.settings.groupKnowledge) ? db.settings.groupKnowledge : [];
+  return db.settings.groupKnowledge;
+}
+
+function rememberGroupKnowledge(db, message) {
+  if (message.chatType !== "group" || !message.messageId || !message.text) return false;
+  const now = Date.now();
+  const entries = groupKnowledgeEntries(db).filter((item) => Date.parse(item.at || 0) >= now - GROUP_KNOWLEDGE_MAX_AGE_MS);
+  if (entries.some((item) => item.chatId === message.chatId && item.messageId === message.messageId)) return false;
+  entries.push({ chatId: message.chatId, messageId: message.messageId, senderId: message.senderId || "", text: String(message.text).slice(0, 4000), at: new Date().toISOString() });
+  const perChat = new Map();
+  db.settings.groupKnowledge = entries.slice().reverse().filter((item) => {
+    const count = perChat.get(item.chatId) || 0;
+    if (count >= GROUP_KNOWLEDGE_MAX_PER_CHAT) return false;
+    perChat.set(item.chatId, count + 1);
+    return true;
+  }).reverse().slice(-5000);
+  writeDb(db);
+  return true;
+}
+
+function groupKnowledgeContext(db, message) {
+  if (message.chatType !== "group" || !message.chatId) return "";
+  return groupKnowledgeEntries(db).filter((item) => item.chatId === message.chatId && item.messageId !== message.messageId).slice(-20).map((item) => "[Group context] " + item.text).join("\n").slice(-10000);
+}
 
 function defaultCollaborationPolicy(agents = []) {
   const ids = agents.map((agent) => agent.id);
@@ -1142,6 +1172,8 @@ async function processFeishuMessageEvent(eventBody, botConfig = null) {
   if (!(message.eventType.includes("im.message") || message.eventType.includes("message"))) return;
 
   const policy = normalizeCollaborationPolicy(db.settings?.collaborationPolicy, db.agents);
+  const isHumanSender = !message.senderType || message.senderType === "user";
+  if (isHumanSender && message.chatType === "group") rememberGroupKnowledge(db, message);
   let task = null;
   let conversation = null;
   if (message.senderType === "bot") {
@@ -1174,6 +1206,7 @@ async function processFeishuMessageEvent(eventBody, botConfig = null) {
 
   let replyText = "";
   try {
+    const groupContext = groupKnowledgeContext(db, message);
     let promptText = message.text;
     if (task) {
       const prior = task.contributions.map((item) => item.agentName + ": " + item.content).join("\n\n");
@@ -1183,9 +1216,12 @@ async function processFeishuMessageEvent(eventBody, botConfig = null) {
         "Task id: " + task.id + ". You are contribution " + task.messageCount + " of " + task.maxMessages + ".",
         "Give only your professional contribution. Do not add greetings. Do not claim access to missing context. Do not perform write, delete, external-send, or configuration actions.",
         "Task: " + message.text,
+        "Relevant group context: " + (groupContext || "none"),
         "Prior contributions: " + (prior || "none"),
         "Next scheduled role: " + nextLabel
       ].join("\n\n");
+    } else if (groupContext) {
+      promptText = "Recent group context (use it only when relevant):\n" + groupContext + "\n\nCurrent user request:\n" + message.text;
     }
     replyText = await runAgentReply(db, bot.agentId || "daily_assistant", promptText);
   } catch (error) {

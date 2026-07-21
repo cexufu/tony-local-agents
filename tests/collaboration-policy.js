@@ -44,6 +44,14 @@ async function ready() {
     const selectedAgents = selectedIds.map((id) => state.agents.find((agent) => agent.id === id));
     await request('/api/lark-bots', { method: 'POST', body: JSON.stringify({ name: 'test coordinator', appId: 'cli_test_coordinator', appSecret: '', agentId: selectedIds[0], openId: 'ou_test_coordinator', enabled: true }) });
     await request('/api/lark-bots', { method: 'POST', body: JSON.stringify({ name: 'test bystander', appId: 'cli_test_bystander', appSecret: '', agentId: selectedIds[1], openId: 'ou_test_bystander', enabled: true }) });
+    await request('/feishu/events/usr_owner', { method: 'POST', body: JSON.stringify({
+      header: { event_type: 'im.message.receive_v1', app_id: 'cli_test_coordinator' },
+      event: { sender: { sender_type: 'user', sender_id: { open_id: 'ou_test_one' } }, message: { message_id: 'message_background_knowledge', chat_id: 'chat_dynamic_plan', chat_type: 'group', message_type: 'text', content: JSON.stringify({ text: 'Background decision: use the existing API contract.' }) } }
+    }) });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    let memoryStored = JSON.parse(fs.readFileSync(path.join(dataDir, 'workspaces', 'usr_owner', 'studio.json'), 'utf8'));
+    if (!(memoryStored.settings.groupKnowledge || []).some((item) => item.messageId === 'message_background_knowledge')) throw new Error('Unmentioned group message was not stored as group knowledge');
+    if ((memoryStored.settings.collaborationTasks || []).length) throw new Error('Unmentioned group message should not start a task or reply');
     const taskText = "@_user_1 \u534f\u4f5c\u4efb\u52a1\uff1a\u534f\u8c03\uff1a" + selectedAgents[0].name + "\uff1b\u53c2\u4e0e\uff1a" + selectedAgents.map((agent) => agent.name).join("\u3001") + "\uff1b\u6267\u7b14\uff1a" + selectedAgents[2].name + "\uff1b\u8f6e\u6b21\uff1a10\uff1b\u4efb\u52a1\uff1a\u6d4b\u8bd5\u4e34\u65f6\u7f16\u7ec4";
     await request('/feishu/events/usr_owner', { method: 'POST', body: JSON.stringify({
       header: { event_type: 'im.message.receive_v1', app_id: 'cli_test_bystander' },
@@ -63,7 +71,7 @@ async function ready() {
     if (task.coordinatorAgentId !== selectedIds[0] || task.writerAgentId !== selectedIds[2]) throw new Error('Coordinator or writer was not parsed from Feishu task directive');
     if (task.participantAgentIds.length !== 3 || task.rounds !== 10) throw new Error('Participants or rounds were not parsed from Feishu task directive');
     if (task.sequence.length !== 10 || task.sequence.at(-1) !== selectedIds[2]) throw new Error('Feishu task directive did not create a controlled sequence');
-    console.log('Collaboration policy test passed: five-role cap, ten-message cap, private task ledger, Feishu task directives, and exact open-id mention routing');
+    console.log('Collaboration policy test passed: five-role cap, ten-message cap, private task ledger, Feishu task directives, exact open-id mention routing, and silent group knowledge capture');
   } finally {
     child.kill();
     fs.rmSync(dataDir, { recursive: true, force: true });
