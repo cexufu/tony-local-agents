@@ -1066,8 +1066,9 @@ function listLarkEventLogs(limit = 30) {
 function larkAppDiagnosis(db, req) {
   const settings = db.settings || {};
   const host = req.headers.host || `localhost:${PORT}`;
-  const localCallbackUrl = `http://${host}/feishu/events`;
-  const publicCallbackUrl = settings.larkPublicCallbackUrl || "";
+  const workspaceId = activeWorkspaceId() || "workspace-id";
+  const localCallbackUrl = `http://${host}/feishu/events/${encodeURIComponent(workspaceId)}`;
+  const publicCallbackUrl = publicFeishuCallbackUrl(req) || localCallbackUrl;
   const permissions = [
     { id: "im:message", name: "接收消息事件", why: "让机器人收到群里的 @ 消息。" },
     { id: "im:message:send_as_bot", name: "以机器人身份发送消息", why: "让机器人回复群消息。" },
@@ -1091,39 +1092,6 @@ function larkAppDiagnosis(db, req) {
     permissions,
     steps
   };
-}
-
-function feishuWorkspaceIds() {
-  const ids = [LEGACY_OWNER_ID];
-  try {
-    for (const entry of fs.readdirSync(WORKSPACES_DIR, { withFileTypes: true })) {
-      if (entry.isDirectory() && /^[A-Za-z0-9_-]{3,80}$/.test(entry.name) && !ids.includes(entry.name)) ids.push(entry.name);
-    }
-  } catch {}
-  return ids;
-}
-
-function resolveFeishuWorkspace(body) {
-  if (!body?.encrypt) return LEGACY_OWNER_ID;
-  for (const workspaceId of feishuWorkspaceIds()) {
-    try {
-      const db = workspaceContext.run({ workspaceId }, () => readDb());
-      decryptFeishuPayloadForAnyBot(body.encrypt, db);
-      return workspaceId;
-    } catch {}
-  }
-  return LEGACY_OWNER_ID;
-}
-
-async function handleSharedFeishuEvent(req, res) {
-  try {
-    const body = await readBody(req);
-    const workspaceId = resolveFeishuWorkspace(body);
-    return workspaceContext.run({ workspaceId }, () => handleFeishuEvent(req, res, body));
-  } catch (error) {
-    logServerError(error);
-    return sendJson(res, 400, { error: error.message });
-  }
 }
 
 async function handleFeishuEvent(req, res, receivedBody = null) {
@@ -1365,9 +1333,9 @@ const server = http.createServer((req, res) => {
   if (scopedEvent) {
     return workspaceContext.run({ workspaceId: scopedEvent[1] }, () => handleFeishuEvent(req, res));
   }
-  // FEISHU_SHARED_CALLBACK_V2: legacy shared URL auto-locates the bot workspace by its Encrypt Key.
+  // Every Feishu bot uses its generated workspace callback URL: /feishu/events/:workspaceId.
   if (url.pathname === "/feishu/events") {
-    return handleSharedFeishuEvent(req, res);
+    return sendJson(res, 410, { error: "This shared callback URL is retired. Save the bot in TONA and use its generated workspace callback URL." });
   } else if (url.pathname.startsWith("/api/")) {
     handleApi(req, res, url.pathname);
   } else {
