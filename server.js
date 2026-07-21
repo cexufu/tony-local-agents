@@ -63,10 +63,10 @@ const DEFAULT_DB = {
       type: "openai_compatible",
       baseUrl: "https://api.moonshot.cn/v1",
       apiKey: "",
-      defaultModel: "kimi-k2",
-      models: ["kimi-k2", "moonshot-v1-8k", "moonshot-v1-32k"],
+      defaultModel: "kimi-k3",
+      models: ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
       enabled: false,
-      notes: "Set the exact model name you have access to."
+      notes: "Kimi K2 legacy names are retired. Use kimi-k3 for general work or kimi-k2.7-code for code work when your key has access."
     },
     {
       id: "doubao",
@@ -319,9 +319,25 @@ function transformSecrets(value, transform) {
   for (const [key, item] of Object.entries(value)) copy[key] = SECRET_FIELDS.has(key) ? transform(item) : transformSecrets(item, transform);
   return copy;
 }
+const KIMI_RETIRED_MODEL_IDS = new Set(["kimi-k2", "kimi-k2-0905-preview", "kimi-k2-0711-preview", "kimi-k2-turbo-preview", "kimi-k2-thinking", "kimi-k2-thinking-turbo"]);
+const KIMI_RECOMMENDED_MODELS = ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"];
+function migrateRetiredKimiModels(db) {
+  const provider = (db.providers || []).find((item) => item.id === "kimi");
+  if (!provider) return false;
+  let changed = false;
+  if (KIMI_RETIRED_MODEL_IDS.has(String(provider.defaultModel || ""))) { provider.defaultModel = "kimi-k3"; changed = true; }
+  const mergedModels = [...new Set([...(provider.models || []).filter((model) => !KIMI_RETIRED_MODEL_IDS.has(String(model))), ...KIMI_RECOMMENDED_MODELS])];
+  if (JSON.stringify(mergedModels) !== JSON.stringify(provider.models || [])) { provider.models = mergedModels; changed = true; }
+  for (const agent of db.agents || []) {
+    if (agent.providerId === "kimi" && KIMI_RETIRED_MODEL_IDS.has(String(agent.model || ""))) { agent.model = "kimi-k3"; changed = true; }
+  }
+  return changed;
+}
 function readDb() {
   ensureStore();
-  return transformSecrets(JSON.parse(fs.readFileSync(storagePaths().dbPath, "utf8")), decryptSecretAtRest);
+  const db = transformSecrets(JSON.parse(fs.readFileSync(storagePaths().dbPath, "utf8")), decryptSecretAtRest);
+  if (migrateRetiredKimiModels(db)) writeDb(db);
+  return db;
 }
 function writeDb(db) {
   ensureStore();
