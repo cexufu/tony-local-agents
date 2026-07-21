@@ -1234,7 +1234,7 @@ async function handleApiInWorkspace(req, res, pathname) {
       const bot = normalizeLarkBot({
         ...source,
         callbackWorkspaceId: activeWorkspaceId(),
-        publicCallbackUrl: body.publicCallbackUrl || existing?.publicCallbackUrl || publicFeishuCallbackUrl(req),
+        publicCallbackUrl: (() => { const submitted = String(body.publicCallbackUrl || existing?.publicCallbackUrl || "").trim(); const generated = publicFeishuCallbackUrl(req); return generated && /\/feishu\/events\/?$/.test(submitted) ? generated : (submitted || generated); })(),
         appSecret: body.appSecret && !String(body.appSecret).includes("*") ? body.appSecret : existing?.appSecret || "",
         verificationToken: body.verificationToken && !String(body.verificationToken).includes("*") ? body.verificationToken : existing?.verificationToken || "",
         encryptKey: body.encryptKey && !String(body.encryptKey).includes("*") ? body.encryptKey : existing?.encryptKey || ""
@@ -1332,8 +1332,9 @@ const server = http.createServer((req, res) => {
   if (scopedEvent) {
     return workspaceContext.run({ workspaceId: scopedEvent[1] }, () => handleFeishuEvent(req, res));
   }
+  // FEISHU_LEGACY_OWNER_CALLBACK_V1: keep the original shared URL working for the owner's pre-migration bots.
   if (url.pathname === "/feishu/events") {
-    handleFeishuEvent(req, res);
+    workspaceContext.run({ workspaceId: LEGACY_OWNER_ID }, () => handleFeishuEvent(req, res));
   } else if (url.pathname.startsWith("/api/")) {
     handleApi(req, res, url.pathname);
   } else {
