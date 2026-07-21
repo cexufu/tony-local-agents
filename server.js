@@ -17,6 +17,7 @@ const HUB_AUTH_REQUIRED = process.env.TONA_HUB_AUTH_REQUIRED === "true";
 const TEAMFLOW_INTERNAL_PORT = Number(process.env.TEAMFLOW_INTERNAL_PORT || 7359);
 const LEGACY_OWNER_ID = process.env.TONA_LEGACY_OWNER_ID || "usr_owner";
 const ERROR_LOG_PATH = path.join(DATA_DIR, "tona-server-error.log");
+const FEISHU_OPEN_API_BASE = String(process.env.FEISHU_OPEN_API_BASE || "https://open.feishu.cn/open-apis").replace(/\/+$/, "");
 function logServerError(error) {
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -943,7 +944,7 @@ async function testLarkApp(settings) {
   if (!appId || !appSecret) {
     throw new Error("Feishu App ID and App Secret are required.");
   }
-  const response = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
+  const response = await fetch(FEISHU_OPEN_API_BASE + "/auth/v3/tenant_access_token/internal", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ app_id: appId, app_secret: appSecret })
@@ -1044,7 +1045,7 @@ async function getFeishuTenantToken(settings) {
   if (!appId || !appSecret) {
     throw new Error("Feishu App ID / App Secret are not configured in TONA.");
   }
-  const response = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
+  const response = await fetch(FEISHU_OPEN_API_BASE + "/auth/v3/tenant_access_token/internal", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ app_id: appId, app_secret: appSecret })
@@ -1060,7 +1061,7 @@ async function hydrateLarkBotIdentity(db, bot) {
   if (!bot || bot.openId || !bot.appId || !bot.appSecret) return bot;
   try {
     const token = await getFeishuTenantToken(larkBotToAppSettings(bot));
-    const response = await fetch("https://open.feishu.cn/open-apis/bot/v3/info", { headers: { Authorization: "Bearer " + token } });
+    const response = await fetch(FEISHU_OPEN_API_BASE + "/bot/v3/info", { headers: { Authorization: "Bearer " + token } });
     const payload = await response.json().catch(() => ({}));
     const identity = payload.bot || payload.data?.bot || payload.data || {};
     const openId = identity.open_id || identity.openId || "";
@@ -1152,7 +1153,7 @@ async function replyFeishuInteractiveCard(settings, messageId, card) {
 async function replyFeishuMessagePayload(settings, messageId, messageType, content) {
   if (!messageId) throw new Error("Cannot reply: missing Feishu message_id.");
   const token = await getFeishuTenantToken(settings);
-  const response = await fetch("https://open.feishu.cn/open-apis/im/v1/messages/" + encodeURIComponent(messageId) + "/reply", {
+  const response = await fetch(FEISHU_OPEN_API_BASE + "/im/v1/messages/" + encodeURIComponent(messageId) + "/reply", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
     body: JSON.stringify({ msg_type: messageType, content: JSON.stringify(content) })
@@ -1160,6 +1161,97 @@ async function replyFeishuMessagePayload(settings, messageId, messageType, conte
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.code !== 0) throw new Error(payload.msg || payload.message || "Failed to reply to Feishu message.");
   return payload;
+}
+
+
+function larkBotForAgent(db, agentId) {
+  return (db.settings?.larkBots || []).find((bot) => bot.enabled !== false && bot.agentId === agentId && bot.appId && bot.appSecret) || null;
+}
+
+async function sendFeishuMessageToChat(settings, chatId, text) {
+  if (!chatId) throw new Error("Cannot send: missing Feishu chat_id.");
+  const token = await getFeishuTenantToken(settings);
+  const response = await fetch(FEISHU_OPEN_API_BASE + "/im/v1/messages?receive_id_type=chat_id", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+    body: JSON.stringify({ receive_id: chatId, msg_type: "text", content: JSON.stringify({ text: String(text || "").slice(0, 6000) }) })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.code !== 0) throw new Error(payload.msg || payload.message || "Failed to send a Feishu group message.");
+  return payload;
+}
+
+function collaborationPrompt(task, message, db, agentId, groupContext) {
+  const prior = task.contributions.map((item) => item.agentName + ": " + item.content).join("\n\n");
+  const position = task.messageCount;
+  const isFinal = position >= task.sequence.length || agentId === task.writerAgentId && position === task.sequence.length;
+  return [
+    "This is a system-managed Feishu multi-agent collaboration.",
+    "Task id: " + task.id + ". You are contribution " + position + " of " + task.sequence.length + ".",
+    isFinal
+      ? "You are the final writer. Synthesize the discussion into a concrete, decision-ready deliverable. Do not mention this internal orchestration."
+      : "Give one focused professional contribution that moves the task forward. Do not greet, do not repeat previous work, and do not claim access to missing context.",
+    "Task: " + message.text,
+    "Relevant group context: " + (groupContext || "none"),
+    "Prior contributions: " + (prior || "none")
+  ].join("\n\n");
+}
+
+function collaborationVisibleMessage(task, db, agentId, content) {
+  const role = collaborationAgentName(db, agentId);
+  const isFinal = task.messageCount >= task.sequence.length || agentId === task.writerAgentId && task.messageCount === task.sequence.length;
+  const header = isFinal
+    ? "【协作交付｜" + role + "】"
+    : "【协作第 " + task.messageCount + "/" + task.sequence.length + " 步｜" + role + "】";
+  return header + "\n" + String(content || "").slice(0, 5200);
+}
+
+async function runServerManagedCollaboration(db, task, message, sourceBot) {
+  const groupContext = groupKnowledgeContext(db, message);
+  task.status = "active";
+  task.deliveryErrors = Array.isArray(task.deliveryErrors) ? task.deliveryErrors : [];
+  writeDb(db);
+
+  for (let index = 0; index < task.sequence.length && index < COLLABORATION_MAX_MESSAGES; index += 1) {
+    const agentId = task.sequence[index];
+    const outputBot = larkBotForAgent(db, agentId);
+    task.messageCount = index + 1;
+    task.nextAgentId = task.sequence[index + 1] || "";
+    task.updatedAt = new Date().toISOString();
+
+    if (!outputBot) {
+      const detail = "该角色还没有连接一个可用的飞书应用机器人，无法加入本轮协作。";
+      task.contributions.push({ agentId, agentName: collaborationAgentName(db, agentId), content: detail, at: new Date().toISOString(), status: "skipped" });
+      task.deliveryErrors.push({ agentId, at: new Date().toISOString(), error: detail });
+      writeDb(db);
+      continue;
+    }
+
+    let content = "";
+    try {
+      content = await runAgentReply(db, agentId, collaborationPrompt(task, message, db, agentId, groupContext));
+    } catch (error) {
+      content = "本轮模型调用失败：" + error.message;
+    }
+    const contribution = { agentId, agentName: collaborationAgentName(db, agentId), content: String(content).slice(0, 3000), at: new Date().toISOString(), status: "completed" };
+    task.contributions.push(contribution);
+    task.contributions = task.contributions.slice(-COLLABORATION_MAX_MESSAGES);
+    const visible = collaborationVisibleMessage(task, db, agentId, content);
+    try {
+      if (index === 0 && sourceBot?.id === outputBot.id) await replyFeishuMessage(larkBotToAppSettings(outputBot), message.messageId, visible);
+      else await sendFeishuMessageToChat(larkBotToAppSettings(outputBot), message.chatId, visible);
+    } catch (error) {
+      contribution.deliveryError = error.message;
+      task.deliveryErrors.push({ agentId, at: new Date().toISOString(), error: error.message });
+      task.deliveryErrors = task.deliveryErrors.slice(-20);
+    }
+    writeDb(db);
+  }
+
+  task.status = "completed";
+  task.nextAgentId = "";
+  task.updatedAt = new Date().toISOString();
+  writeDb(db);
 }
 
 const FEISHU_CAPABILITY_REQUESTS = [
@@ -1257,7 +1349,12 @@ async function processFeishuMessageEvent(eventBody, botConfig = null) {
     const decisionMakerAllowed = !policy.decisionMakerOpenIds.length || policy.decisionMakerOpenIds.includes(message.senderId);
     const plan = message.chatType === "group" && startsCollaborationTask(message.text) ? collaborationPlanFromMessage(db, message, bot) : null;
     const canStart = message.chatType === "group" && policy.enabled && decisionMakerAllowed && Boolean(plan) && !collaborationTaskAlreadyStarted(db, message.messageId);
-    if (canStart) task = createCollaborationTask(db, message, bot, plan);
+    if (canStart) {
+      task = createCollaborationTask(db, message, bot, plan);
+      writeDb(db);
+      await runServerManagedCollaboration(db, task, message, bot);
+      return;
+    }
   }
 
   if (task) {
