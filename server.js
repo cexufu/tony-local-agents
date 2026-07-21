@@ -346,7 +346,7 @@ function writeDb(db) {
 
 function publicDb(db) {
   const settings = db.settings || {};
-  const { collaborationTasks, groupKnowledge, ...safeSettings } = settings;
+  const { collaborationTasks, groupKnowledge, skillRequests, ...safeSettings } = settings;
   return {
     ...db,
     providers: db.providers.map((provider) => ({
@@ -1142,26 +1142,86 @@ function messageMentionsBot(db, message, bot) {
   return aliases.some((alias) => labels.includes(alias));
 }
 
+
 async function replyFeishuMessage(settings, messageId, text) {
+  return replyFeishuMessagePayload(settings, messageId, "text", { text: String(text || "").slice(0, 6000) });
+}
+async function replyFeishuInteractiveCard(settings, messageId, card) {
+  return replyFeishuMessagePayload(settings, messageId, "interactive", card);
+}
+async function replyFeishuMessagePayload(settings, messageId, messageType, content) {
   if (!messageId) throw new Error("Cannot reply: missing Feishu message_id.");
   const token = await getFeishuTenantToken(settings);
   const response = await fetch("https://open.feishu.cn/open-apis/im/v1/messages/" + encodeURIComponent(messageId) + "/reply", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + token
-    },
-    body: JSON.stringify({
-      msg_type: "text",
-      content: JSON.stringify({ text: text.slice(0, 6000) })
-    })
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+    body: JSON.stringify({ msg_type: messageType, content: JSON.stringify(content) })
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.code !== 0) {
-    throw new Error(payload.msg || payload.message || "Failed to reply to Feishu message.");
-  }
+  if (!response.ok || payload.code !== 0) throw new Error(payload.msg || payload.message || "Failed to reply to Feishu message.");
   return payload;
 }
+
+const FEISHU_CAPABILITY_REQUESTS = [
+  { id: "read_feishu_docs", title: "读取飞书文档", kind: "user_oauth", scopes: ["docx:document:readonly", "drive:drive.metadata:readonly"], purpose: "读取你明确授权的文档，用于总结、问答或研究分析。", risk: "仅在你完成飞书个人授权后可读取；不会自动读取所有文档。", keywords: ["读取飞书文档", "读飞书文档", "读取文档", "读文档", "文档阅读"] },
+  { id: "write_feishu_docs", title: "创建或写入飞书文档", kind: "app_permission", scopes: ["docx:document:write_only"], purpose: "根据你确认的内容创建或更新飞书文档。", risk: "会产生或修改云端文档；每次写入前仍应由你确认。", keywords: ["写飞书文档", "创建飞书文档", "写入文档", "生成飞书文档", "修改文档"] },
+  { id: "read_calendar", title: "读取飞书日历", kind: "user_oauth", scopes: ["calendar:calendar:readonly"], purpose: "读取你授权的日历，用于会议安排和日程建议。", risk: "仅使用你个人授权范围内的日历；不会自行创建会议。", keywords: ["读取日历", "读日历", "查看日程", "读取日程", "日历权限"] },
+  { id: "write_calendar", title: "创建或修改飞书日程", kind: "user_oauth", scopes: ["calendar:calendar"], purpose: "根据你的确认创建、调整或取消日程。", risk: "会影响日历安排；每次实际变更前必须再次确认。", keywords: ["创建日程", "写入日历", "修改日程", "安排会议", "日程权限"] },
+  { id: "group_knowledge", title: "读取群内未 @ 消息作为知识上下文", kind: "app_permission", scopes: ["im:message.group_msg"], purpose: "让机器人静默学习群内讨论，在被 @ 时结合上下文回答。", risk: "机器人会收到该群的用户消息，但未经 @ 不会主动回复。", keywords: ["读取群消息", "群消息权限", "群知识", "群上下文", "群聊知识"] }
+];
+function skillRequestEntries(db) {
+  db.settings ||= {};
+  db.settings.skillRequests = Array.isArray(db.settings.skillRequests) ? db.settings.skillRequests : [];
+  return db.settings.skillRequests;
+}
+function findFeishuCapabilityRequest(text) {
+  const normalized = String(text || "").replace(/\s+/g, "").toLowerCase();
+  return FEISHU_CAPABILITY_REQUESTS.find((item) => item.keywords.some((keyword) => normalized.includes(keyword.replace(/\s+/g, "").toLowerCase()))) || null;
+}
+function parseFeishuCapabilityRequest(text) {
+  const source = String(text || "").trim();
+  if (!/(申请|开通|需要|想要|启用).{0,12}(技能|能力|权限)|(?:技能|能力|权限).{0,8}(申请|开通|需要|启用)/.test(source)) return null;
+  return findFeishuCapabilityRequest(source) || { id: "custom_skill", title: source.replace(/^(?:申请|开通|需要|想要|启用)(?:技能|能力|权限)[：:\s]*/u, "").slice(0, 80) || "自定义能力", kind: "implementation_required", scopes: [], purpose: "记录你希望机器人获得的能力，待 TONA 安装对应技能执行器后再启用。", risk: "当前不会自动安装第三方技能、调用外部服务或授予任何权限。" };
+}
+function createFeishuSkillRequest(db, capability, message, bot) {
+  const request = { id: "skill_" + crypto.randomUUID().slice(0, 12), capabilityId: capability.id, title: capability.title, kind: capability.kind, scopes: capability.scopes || [], purpose: capability.purpose, risk: capability.risk, status: "pending", requestedBy: message.senderId || "", requestedInChatId: message.chatId || "", requestedMessageId: message.messageId || "", botId: bot?.id || "", agentId: bot?.agentId || "", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  const requests = skillRequestEntries(db); requests.push(request); db.settings.skillRequests = requests.slice(-300); writeDb(db); return request;
+}
+function capabilityCard(request) {
+  const scopeText = request.scopes.length ? request.scopes.join("、") : "当前没有可直接开通的飞书权限";
+  const actionLabel = request.kind === "app_permission" ? "确认提交申请" : request.kind === "user_oauth" ? "确认授权意图" : "确认记录申请";
+  return { config: { wide_screen_mode: true }, header: { title: { tag: "plain_text", content: "TONA 能力与权限申请" }, template: "orange" }, elements: [
+    { tag: "div", text: { tag: "lark_md", content: "**申请能力：** " + request.title + "\n\n**用途：** " + request.purpose + "\n\n**涉及权限：** " + scopeText + "\n\n**边界：** " + request.risk } },
+    { tag: "note", elements: [{ tag: "plain_text", content: "确认只会记录或发起下一步，不会绕过飞书权限审核，也不会立即执行写入、发送或删除操作。" }] },
+    { tag: "action", actions: [
+      { tag: "button", text: { tag: "plain_text", content: actionLabel }, type: "primary", value: { source: "tona_skill_request", requestId: request.id, action: "approve" } },
+      { tag: "button", text: { tag: "plain_text", content: "暂不授权" }, type: "default", value: { source: "tona_skill_request", requestId: request.id, action: "reject" } }
+    ] }
+  ] };
+}
+function cardActionValue(eventBody) {
+  const event = eventBody?.event || eventBody || {}; const raw = event.action?.value || event.action?.form_value || event.value || {};
+  if (typeof raw === "string") { try { return JSON.parse(raw); } catch { return {}; } } return raw && typeof raw === "object" ? raw : {};
+}
+function cardOperatorId(eventBody) {
+  const event = eventBody?.event || eventBody || {}; return event.operator?.open_id || event.operator?.user_id || event.operator?.id?.open_id || event.operator?.id?.user_id || "";
+}
+function skillRequestToast(type, content) { return { toast: { type, content } }; }
+function handleFeishuCardAction(eventBody) {
+  const db = readDb(); const value = cardActionValue(eventBody);
+  if (value.source !== "tona_skill_request" || !value.requestId) return skillRequestToast("warning", "这不是 TONA 的能力申请卡片。");
+  const request = skillRequestEntries(db).find((item) => item.id === value.requestId);
+  if (!request) return skillRequestToast("warning", "该申请已过期或不属于当前工作区。");
+  const operatorId = cardOperatorId(eventBody);
+  if (request.requestedBy && operatorId && request.requestedBy !== operatorId) return skillRequestToast("warning", "只有发起该申请的用户可以确认。");
+  if (request.status !== "pending") return skillRequestToast("info", "该申请已处理：" + request.status + "。");
+  request.approvedBy = operatorId || request.requestedBy || ""; request.updatedAt = new Date().toISOString();
+  if (value.action === "reject") { request.status = "rejected"; writeDb(db); return skillRequestToast("info", "已保留现状，机器人不会启用这项能力。"); }
+  if (request.kind === "app_permission") { request.status = "needs_admin"; writeDb(db); return skillRequestToast("warning", "申请已记录：请在飞书开放平台开通对应权限、发布应用后才会生效。"); }
+  if (request.kind === "user_oauth") { request.status = "oauth_requested"; writeDb(db); return skillRequestToast("success", "授权意图已确认。需要先为该飞书应用配置 OAuth 回调和权限范围，TONA 才会打开个人授权页。"); }
+  request.status = "implementation_requested"; writeDb(db); return skillRequestToast("info", "技能申请已记录；当前版本尚未安装该技能执行器，因此不会自动执行。");
+}
+
 
 async function processFeishuMessageEvent(eventBody, botConfig = null) {
   const db = readDb();
@@ -1187,6 +1247,12 @@ async function processFeishuMessageEvent(eventBody, botConfig = null) {
     if (message.chatType === "group") {
       await hydrateLarkBotIdentity(db, bot);
       if (!messageMentionsBot(db, message, bot)) return;
+    }
+    const capability = parseFeishuCapabilityRequest(message.text);
+    if (capability) {
+      const request = createFeishuSkillRequest(db, capability, message, bot);
+      await replyFeishuInteractiveCard(larkBotToAppSettings(bot), message.messageId, capabilityCard(request));
+      return;
     }
     const decisionMakerAllowed = !policy.decisionMakerOpenIds.length || policy.decisionMakerOpenIds.includes(message.senderId);
     const plan = message.chatType === "group" && startsCollaborationTask(message.text) ? collaborationPlanFromMessage(db, message, bot) : null;
@@ -1343,6 +1409,9 @@ async function handleFeishuEvent(req, res, receivedBody = null) {
         return sendJson(res, 403, { error: "Verification token mismatch." });
       }
       return sendJson(res, 200, { challenge: eventBody.challenge });
+    }
+    if (!decryptError && (eventBody.header?.event_type || eventBody.event_type) === "card.action.trigger") {
+      return sendJson(res, 200, handleFeishuCardAction(eventBody));
     }
     const eventLogDir = larkEventLogDir();
     fs.mkdirSync(eventLogDir, { recursive: true });
