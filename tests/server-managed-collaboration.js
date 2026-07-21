@@ -122,7 +122,14 @@ async function waitFor(check, label) {
     if (!deliveries[0].path.includes("/reply")) throw new Error("The coordinator should reply to the initiating task message");
     if (deliveries.slice(1).some((delivery) => !delivery.path.includes("receive_id_type=chat_id"))) throw new Error("Follow-up roles were not sent directly to the group");
     if (!deliveries.at(-1).body.content.includes("协作交付")) throw new Error("Final writer did not send the visible delivery");
-    console.log("Server-managed collaboration test passed: every scheduled role delivered a direct Feishu group contribution and final synthesis.");
+    const expectedMentions = task.sequence.map((agentId, index) => index === task.sequence.length - 1 ? "ou_scheduler_user" : "ou_scheduler_" + agents.findIndex((agent) => agent.id === task.sequence[index + 1]));
+    for (const [index, delivery] of deliveries.entries()) {
+      if (delivery.body.msg_type !== "post") throw new Error("Collaboration delivery did not use a rich-text @ message");
+      const post = JSON.parse(delivery.body.content);
+      const atElement = post.zh_cn?.content?.[0]?.find((item) => item.tag === "at");
+      if (!atElement || atElement.user_id !== expectedMentions[index]) throw new Error("Collaboration handoff did not @ the expected next participant");
+    }
+    console.log("Server-managed collaboration test passed: every scheduled role delivered a real @ handoff and the final synthesis @ mentioned the requester.");
   } finally {
     if (child) child.kill();
     await new Promise((resolve) => fakeFeishu.close(resolve));

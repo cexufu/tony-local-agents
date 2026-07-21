@@ -465,7 +465,8 @@ function collaborationTasks(db) {
 
 function collaborationTaskSequence(plan) {
   const writer = plan.writerAgentId;
-  const contributors = [plan.coordinatorAgentId, ...plan.participantAgentIds.filter((id) => id !== plan.coordinatorAgentId && id !== writer)].filter(Boolean);
+  // Every participant may contribute during the discussion; the writer still owns the final synthesis.
+  const contributors = [plan.coordinatorAgentId, ...plan.participantAgentIds.filter((id) => id !== plan.coordinatorAgentId)].filter(Boolean);
   const sequence = [];
   const contributionLimit = Math.max(0, COLLABORATION_MAX_MESSAGES - (writer ? 1 : 0));
   for (let round = 0; round < plan.rounds && sequence.length < contributionLimit; round += 1) {
@@ -512,7 +513,9 @@ function collaborationPlanFromMessage(db, message, bot) {
   const writerAgentId = collaborationAgentIdFromText(db, writerLabel) || participantAgentIds[participantAgentIds.length - 1] || bot.agentId;
   if (!participantAgentIds.includes(writerAgentId) && participantAgentIds.length < COLLABORATION_MAX_PARTICIPANTS) participantAgentIds.push(writerAgentId);
   const roundsLabel = collaborationDirectiveValue(taskText, "\\u8f6e\\u6b21|\\u56de\\u5408|\\u8ba8\\u8bba\\u8f6e");
-  const rounds = Math.min(COLLABORATION_MAX_MESSAGES, Math.max(1, Number.parseInt(roundsLabel, 10) || 1));
+  const parsedRounds = Number.parseInt(roundsLabel, 10);
+  // No explicit round count keeps discussion lively without consuming the full safety budget by default.
+  const rounds = Number.isFinite(parsedRounds) ? Math.min(COLLABORATION_MAX_MESSAGES, Math.max(1, parsedRounds)) : 3;
   return { coordinatorAgentId: bot.agentId, participantAgentIds, writerAgentId, rounds };
 }
 
@@ -1168,13 +1171,13 @@ function larkBotForAgent(db, agentId) {
   return (db.settings?.larkBots || []).find((bot) => bot.enabled !== false && bot.agentId === agentId && bot.appId && bot.appSecret) || null;
 }
 
-async function sendFeishuMessageToChat(settings, chatId, text) {
+async function sendFeishuMessageToChat(settings, chatId, messageType, content) {
   if (!chatId) throw new Error("Cannot send: missing Feishu chat_id.");
   const token = await getFeishuTenantToken(settings);
   const response = await fetch(FEISHU_OPEN_API_BASE + "/im/v1/messages?receive_id_type=chat_id", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-    body: JSON.stringify({ receive_id: chatId, msg_type: "text", content: JSON.stringify({ text: String(text || "").slice(0, 6000) }) })
+    body: JSON.stringify({ receive_id: chatId, msg_type: messageType, content: JSON.stringify(content) })
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.code !== 0) throw new Error(payload.msg || payload.message || "Failed to send a Feishu group message.");
@@ -1190,20 +1193,33 @@ function collaborationPrompt(task, message, db, agentId, groupContext) {
     "Task id: " + task.id + ". You are contribution " + position + " of " + task.sequence.length + ".",
     isFinal
       ? "You are the final writer. Synthesize the discussion into a concrete, decision-ready deliverable. Do not mention this internal orchestration."
-      : "Give one focused professional contribution that moves the task forward. Do not greet, do not repeat previous work, and do not claim access to missing context.",
+      : "Respond naturally to the prior discussion: build on it, question it, resolve a disagreement, or add the next missing decision. You are already invited into this collaboration, so do not wait for a new @ mention. Keep the contribution focused; do not greet, repeat previous work, or claim access to missing context.",
     "Task: " + message.text,
     "Relevant group context: " + (groupContext || "none"),
     "Prior contributions: " + (prior || "none")
   ].join("\n\n");
 }
 
-function collaborationVisibleMessage(task, db, agentId, content) {
+async function collaborationHandoffTarget(db, task, message) {
+  if (!task.nextAgentId) {
+    return message.senderId ? { id: message.senderId, name: "任务发起人", final: true } : null;
+  }
+  const nextBot = larkBotForAgent(db, task.nextAgentId);
+  if (!nextBot) return null;
+  await hydrateLarkBotIdentity(db, nextBot);
+  return nextBot.openId ? { id: nextBot.openId, name: nextBot.name || collaborationAgentName(db, task.nextAgentId), final: false } : null;
+}
+
+function collaborationVisibleMessage(task, db, agentId, content, handoffTarget) {
   const role = collaborationAgentName(db, agentId);
   const isFinal = task.messageCount >= task.sequence.length || agentId === task.writerAgentId && task.messageCount === task.sequence.length;
-  const header = isFinal
-    ? "【协作交付｜" + role + "】"
-    : "【协作第 " + task.messageCount + "/" + task.sequence.length + " 步｜" + role + "】";
-  return header + "\n" + String(content || "").slice(0, 5200);
+  const title = isFinal
+    ? "协作交付｜" + role
+    : "协作第 " + task.messageCount + "/" + task.sequence.length + " 步｜" + role;
+  const handoffText = handoffTarget?.final ? " 请确认本次交付，并决定下一步。" : " 请接续讨论，回应并推进上一轮的结论。";
+  const line = [{ tag: "text", text: String(content || "").slice(0, 5200) }];
+  if (handoffTarget?.id) line.push({ tag: "at", user_id: handoffTarget.id, user_name: handoffTarget.name }, { tag: "text", text: handoffText });
+  return { zh_cn: { title, content: [line] } };
 }
 
 async function runServerManagedCollaboration(db, task, message, sourceBot) {
@@ -1227,6 +1243,15 @@ async function runServerManagedCollaboration(db, task, message, sourceBot) {
       continue;
     }
 
+    const handoffTarget = await collaborationHandoffTarget(db, task, message);
+    if (!handoffTarget?.id) {
+      const detail = "无法获取下一位协作对象的飞书 Open ID，因此不能进行必须 @ 的交接。";
+      task.contributions.push({ agentId, agentName: collaborationAgentName(db, agentId), content: detail, at: new Date().toISOString(), status: "blocked" });
+      task.deliveryErrors.push({ agentId, at: new Date().toISOString(), error: detail });
+      task.status = "blocked";
+      writeDb(db);
+      return;
+    }
     let content = "";
     try {
       content = await runAgentReply(db, agentId, collaborationPrompt(task, message, db, agentId, groupContext));
@@ -1236,10 +1261,10 @@ async function runServerManagedCollaboration(db, task, message, sourceBot) {
     const contribution = { agentId, agentName: collaborationAgentName(db, agentId), content: String(content).slice(0, 3000), at: new Date().toISOString(), status: "completed" };
     task.contributions.push(contribution);
     task.contributions = task.contributions.slice(-COLLABORATION_MAX_MESSAGES);
-    const visible = collaborationVisibleMessage(task, db, agentId, content);
+    const visible = collaborationVisibleMessage(task, db, agentId, content, handoffTarget);
     try {
-      if (index === 0 && sourceBot?.id === outputBot.id) await replyFeishuMessage(larkBotToAppSettings(outputBot), message.messageId, visible);
-      else await sendFeishuMessageToChat(larkBotToAppSettings(outputBot), message.chatId, visible);
+      if (index === 0 && sourceBot?.id === outputBot.id) await replyFeishuMessagePayload(larkBotToAppSettings(outputBot), message.messageId, "post", visible);
+      else await sendFeishuMessageToChat(larkBotToAppSettings(outputBot), message.chatId, "post", visible);
     } catch (error) {
       contribution.deliveryError = error.message;
       task.deliveryErrors.push({ agentId, at: new Date().toISOString(), error: error.message });

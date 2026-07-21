@@ -71,7 +71,17 @@ async function ready() {
     if (task.coordinatorAgentId !== selectedIds[0] || task.writerAgentId !== selectedIds[2]) throw new Error('Coordinator or writer was not parsed from Feishu task directive');
     if (task.participantAgentIds.length !== 3 || task.rounds !== 10) throw new Error('Participants or rounds were not parsed from Feishu task directive');
     if (task.sequence.length !== 10 || task.sequence.at(-1) !== selectedIds[2]) throw new Error('Feishu task directive did not create a controlled sequence');
-    console.log('Collaboration policy test passed: five-role cap, ten-message cap, private task ledger, Feishu task directives, exact open-id mention routing, and silent group knowledge capture');
+    const openDiscussionText = "@_user_1 协作任务：协调：" + selectedAgents[0].name + "；参与：" + selectedAgents.map((agent) => agent.name).join("、") + "；执笔：" + selectedAgents[2].name + "；任务：测试默认自由讨论";
+    await request('/feishu/events/usr_owner', { method: 'POST', body: JSON.stringify({
+      header: { event_type: 'im.message.receive_v1', app_id: 'cli_test_coordinator' },
+      event: { sender: { sender_type: 'user', sender_id: { open_id: 'ou_test_one' } }, message: { message_id: 'message_open_discussion', chat_id: 'chat_dynamic_plan', chat_type: 'group', message_type: 'text', mentions: [{ key: '@_user_1', name: 'Feishu display name', id: { open_id: 'ou_test_coordinator' } }], content: JSON.stringify({ text: openDiscussionText }) } }
+    }) });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    stored = JSON.parse(fs.readFileSync(path.join(dataDir, 'workspaces', 'usr_owner', 'studio.json'), 'utf8'));
+    const openTask = (stored.settings.collaborationTasks || []).find((item) => item.sourceMessageId === 'message_open_discussion');
+    if (!openTask || openTask.rounds !== 3 || openTask.sequence.length !== 10 || openTask.sequence.at(-1) !== selectedIds[2]) throw new Error('An unspecified round count did not create the balanced open discussion');
+    if (!openTask.sequence.slice(0, -1).includes(selectedIds[2])) throw new Error('The final writer was excluded from the open discussion');
+    console.log('Collaboration policy test passed: five-role cap, ten-message cap, private task ledger, Feishu task directives, open discussion defaults, exact open-id mention routing, and silent group knowledge capture');
   } finally {
     child.kill();
     fs.rmSync(dataDir, { recursive: true, force: true });
