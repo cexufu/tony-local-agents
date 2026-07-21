@@ -416,17 +416,59 @@ function collaborationTasks(db) {
   return db.settings.collaborationTasks;
 }
 
-function collaborationTaskSequence(policy, initialAgentId) {
-  const writer = policy.writerAgentId;
-  const sequence = [initialAgentId, ...policy.participantAgentIds.filter((id) => id !== initialAgentId && id !== writer)];
-  if (writer && sequence[sequence.length - 1] !== writer) sequence.push(writer);
-  return sequence.filter(Boolean).slice(0, COLLABORATION_MAX_MESSAGES);
+function collaborationTaskSequence(plan) {
+  const writer = plan.writerAgentId;
+  const contributors = [plan.coordinatorAgentId, ...plan.participantAgentIds.filter((id) => id !== plan.coordinatorAgentId && id !== writer)].filter(Boolean);
+  const sequence = [];
+  for (let round = 0; round < plan.rounds && sequence.length < COLLABORATION_MAX_MESSAGES; round += 1) sequence.push(...contributors);
+  if (writer && sequence.length < COLLABORATION_MAX_MESSAGES) sequence.push(writer);
+  return sequence.slice(0, COLLABORATION_MAX_MESSAGES);
 }
 
 function startsCollaborationTask(text) { return /\u534f\u4f5c|\u534f\u540c|\u591a\u673a\u5668\u4eba|\u591aAI|multi[ -]?agent/i.test(String(text || "")); }
 
-function createCollaborationTask(db, message, bot, policy) {
-  const task = { id: crypto.randomUUID().slice(0, 8), chatId: message.chatId || "", startedBy: message.senderId || "", startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), status: "active", maxMessages: policy.maxMessages, messageCount: 0, sequence: collaborationTaskSequence(policy, bot.agentId), nextAgentId: bot.agentId, contributions: [] };
+function collaborationDirectiveValue(text, labels) {
+  const pattern = new RegExp("(?:^|[\\n\\u3002\\uff1b;]|(?:\\u534f\\u4f5c(?:\\u4efb\\u52a1)?|\\u534f\\u540c)\\s*[:\\uff1a])\\s*(?:" + labels + ")\\s*[:\\uff1a]\\s*([^\\n\\u3002\\uff1b;]+)", "i");
+  const match = String(text || "").match(pattern);
+  return match ? match[1].trim() : "";
+}
+
+function collaborationAgentIdsFromText(db, value) {
+  const agents = db.agents || [];
+  const tokens = String(value || "").split(new RegExp("[,\\uFF0C\\u3001/]" )).map((item) => item.trim()).filter(Boolean);
+  const ids = [];
+  for (const token of tokens) {
+    const agent = agents.find((item) => item.id === token || item.name === token);
+    if (agent && !ids.includes(agent.id)) ids.push(agent.id);
+  }
+  if (ids.length) return ids;
+  return agents.filter((item) => item.name && String(value || "").includes(item.name)).map((item) => item.id);
+}
+
+function collaborationAgentIdFromText(db, value) { return collaborationAgentIdsFromText(db, value)[0] || ""; }
+
+function collaborationPlanFromMessage(db, message, bot) {
+  const taskText = String(message.text || "");
+  const coordinatorLabel = collaborationDirectiveValue(taskText, "\\u534f\\u8c03|\\u4e3b\\u5bfc");
+  const requestedCoordinator = collaborationAgentIdFromText(db, coordinatorLabel);
+  if (requestedCoordinator && requestedCoordinator !== bot.agentId) return null;
+  const participantLabel = collaborationDirectiveValue(taskText, "\\u53c2\\u4e0e|\\u89d2\\u8272|\\u6210\\u5458");
+  const mentioned = collaborationAgentIdsFromText(db, participantLabel || taskText);
+  const participantAgentIds = [...new Set([bot.agentId, ...mentioned])].slice(0, COLLABORATION_MAX_PARTICIPANTS);
+  const writerLabel = collaborationDirectiveValue(taskText, "\\u6267\\u7b14|\\u4e3b\\u7b14|\\u6c47\\u603b|\\u7ed3\\u8bba");
+  const writerAgentId = collaborationAgentIdFromText(db, writerLabel) || participantAgentIds[participantAgentIds.length - 1] || bot.agentId;
+  if (!participantAgentIds.includes(writerAgentId) && participantAgentIds.length < COLLABORATION_MAX_PARTICIPANTS) participantAgentIds.push(writerAgentId);
+  const roundsLabel = collaborationDirectiveValue(taskText, "\\u8f6e\\u6b21|\\u56de\\u5408|\\u8ba8\\u8bba\\u8f6e");
+  const rounds = Math.min(COLLABORATION_MAX_MESSAGES, Math.max(1, Number.parseInt(roundsLabel, 10) || 1));
+  return { coordinatorAgentId: bot.agentId, participantAgentIds, writerAgentId, rounds };
+}
+
+function collaborationTaskAlreadyStarted(db, messageId) {
+  return collaborationTasks(db).some((task) => task.sourceMessageId === messageId);
+}
+
+function createCollaborationTask(db, message, bot, plan) {
+  const task = { id: crypto.randomUUID().slice(0, 8), sourceMessageId: message.messageId, chatId: message.chatId || "", startedBy: message.senderId || "", startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), status: "active", maxMessages: COLLABORATION_MAX_MESSAGES, messageCount: 0, coordinatorAgentId: plan.coordinatorAgentId, writerAgentId: plan.writerAgentId, participantAgentIds: plan.participantAgentIds, rounds: plan.rounds, sequence: collaborationTaskSequence(plan), nextAgentId: bot.agentId, contributions: [] };
   collaborationTasks(db).push(task);
   return task;
 }
@@ -1055,8 +1097,9 @@ async function processFeishuMessageEvent(eventBody, botConfig = null) {
   } else {
     if (message.chatType === "group" && !message.isAtAll && !message.hasDirectMention) return;
     const decisionMakerAllowed = !policy.decisionMakerOpenIds.length || policy.decisionMakerOpenIds.includes(message.senderId);
-    const canStart = message.chatType === "group" && policy.enabled && decisionMakerAllowed && startsCollaborationTask(message.text) && bot.agentId === policy.coordinatorAgentId;
-    if (canStart) task = createCollaborationTask(db, message, bot, policy);
+    const plan = message.chatType === "group" && startsCollaborationTask(message.text) ? collaborationPlanFromMessage(db, message, bot) : null;
+    const canStart = message.chatType === "group" && policy.enabled && decisionMakerAllowed && Boolean(plan) && !collaborationTaskAlreadyStarted(db, message.messageId);
+    if (canStart) task = createCollaborationTask(db, message, bot, plan);
   }
 
   if (task) {

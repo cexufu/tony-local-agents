@@ -666,13 +666,3 @@ textarea {
     grid-template-columns: 1fr;
   }
 }
-
-
-.collaboration-role-grid, .rule-grid { display: grid; gap: 10px; }
-.collaboration-role { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 10px; align-items: start; border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fbfcfd; cursor: pointer; }
-.collaboration-role:has(input:checked) { border-color: var(--accent); background: var(--soft); }
-.collaboration-role input { margin-top: 3px; }
-.collaboration-role small, .rule-grid span { display: block; margin-top: 4px; color: var(--muted); line-height: 1.45; }
-.rule-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.rule-grid > div { border-left: 3px solid var(--accent); padding: 4px 0 4px 12px; }
-@media (max-width: 720px) { .rule-grid { grid-template-columns: 1fr; } }
