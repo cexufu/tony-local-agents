@@ -87,6 +87,7 @@ function renderAll() {
   renderAgentProviderSelect();
   renderAgents();
   renderAgentForm();
+  renderCollaborationPolicy();
   renderWorkflows();
   renderWorkflowForm();
   renderLarkForm();
@@ -308,6 +309,52 @@ async function renderLarkAppDiagnosis() {
     box.innerHTML = '<div class="mode-note"><strong>诊断失败</strong><p>' + escapeHtml(error.message) + '</p></div>';
   }
 }
+function renderCollaborationPolicy() {
+  const form = document.querySelector("#collaborationForm");
+  const list = document.querySelector("#collaborationParticipantList");
+  if (!form || !list || !state.db) return;
+  const policy = state.db.settings?.collaborationPolicy || {};
+  const selected = new Set(policy.participantAgentIds || []);
+  const options = state.db.agents.map((agent) => '<option value="' + escapeHtml(agent.id) + '">' + escapeHtml(agent.name) + '</option>').join("");
+  document.querySelector("#collaborationCoordinatorSelect").innerHTML = options;
+  document.querySelector("#collaborationWriterSelect").innerHTML = options;
+  setForm(form, {
+    enabled: String(policy.enabled !== false), maxMessages: String(policy.maxMessages || 10),
+    coordinatorAgentId: policy.coordinatorAgentId || "", writerAgentId: policy.writerAgentId || "",
+    decisionMakerOpenIds: (policy.decisionMakerOpenIds || []).join(", "),
+    requireCollaborationKeyword: String(policy.requireCollaborationKeyword !== false),
+    allowBotHandoffs: String(policy.allowBotHandoffs !== false),
+    requireWriteConfirmation: String(policy.requireWriteConfirmation !== false)
+  });
+  list.innerHTML = state.db.agents.map((agent) => '<label class="collaboration-role"><input type="checkbox" value="' + escapeHtml(agent.id) + '"' + (selected.has(agent.id) ? ' checked' : '') + ' /><span><strong>' + escapeHtml(agent.name) + '</strong><small>' + escapeHtml(agent.role) + '</small></span></label>').join("");
+  const status = document.querySelector("#collaborationParticipantStatus");
+  const refresh = () => {
+    const checked = list.querySelectorAll("input:checked").length;
+    status.textContent = checked + " / 5";
+    list.querySelectorAll("input:not(:checked)").forEach((input) => { input.disabled = checked >= 5; });
+  };
+  list.querySelectorAll("input").forEach((input) => input.addEventListener("change", refresh));
+  refresh();
+}
+
+async function saveCollaborationPolicy(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const participantAgentIds = Array.from(document.querySelectorAll("#collaborationParticipantList input:checked")).map((input) => input.value);
+  if (!participantAgentIds.length) return toast("请至少选择一个参与角色。");
+  if (participantAgentIds.length > 5) return toast("一次协作任务最多可包含 5 个角色。");
+  const data = formData(form);
+  data.participantAgentIds = participantAgentIds;
+  data.enabled = data.enabled === "true";
+  data.requireCollaborationKeyword = data.requireCollaborationKeyword === "true";
+  data.allowBotHandoffs = data.allowBotHandoffs === "true";
+  data.requireWriteConfirmation = data.requireWriteConfirmation === "true";
+  const result = await api("/api/collaboration-policy", { method: "POST", body: JSON.stringify(data) });
+  state.db.settings.collaborationPolicy = result.collaborationPolicy;
+  renderCollaborationPolicy();
+  toast("协作规则已保存。");
+}
+
 function renderWorkflowSelect() {
   const select = $("#workflowSelect");
   select.innerHTML = state.db.workflows.map((workflow) => (
@@ -634,6 +681,7 @@ function bindEvents() {
   $("#sendToLarkButton").addEventListener("click", sendToLark);
   bindIfPresent("#providerForm", "submit", saveProvider);
   bindIfPresent("#agentForm", "submit", saveAgent);
+  bindIfPresent("#collaborationForm", "submit", saveCollaborationPolicy);
   bindIfPresent("#workflowForm", "submit", saveWorkflow);
   bindIfPresent("#larkForm", "submit", saveLarkSettings);
   bindIfPresent("#larkAppForm", "submit", saveLarkAppSettings);

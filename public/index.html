@@ -21,6 +21,7 @@
           <button class="nav-item" data-view="studio">工作台</button>
           <button class="nav-item" data-view="providers">模型</button>
           <button class="nav-item" data-view="agents">角色</button>
+          <button class="nav-item" data-view="collaboration">????</button>
           <button class="nav-item" data-view="workflows">流程</button>
           <button class="nav-item" data-view="lark">飞书</button>
           <button class="nav-item" data-view="runs">记录</button>
@@ -106,7 +107,7 @@
                 <h3>输入</h3>
                 <select id="workflowSelect"></select>
               </div>
-              <textarea id="workflowInput" spellcheck="false">我想做一个个人 AI agent 工作台。它需要支持多个模型供应商，比如 OpenAI、DeepSeek、豆包和 Kimi；用户可以用页面创建角色、配置技能、编排工作流，并在未来接入飞书文档和群聊。</textarea>
+              <textarea id="workflowInput" spellcheck="false">我想做一个个人 AI agent 工作台。它需要支持多个模型供应商，比如 OpenAI、DeepSeek、豆包和 Kimi；用户可以用页面创建角色、配置技能、编排工作流，并接入飞书群聊做角色问答。</textarea>
               <div class="inline-actions">
                 <button id="loadSampleButton">示例材料</button>
                 <button id="clearInputButton">清空</button>
@@ -213,6 +214,47 @@
           </div>
         </section>
 
+        <section class="view" id="view-collaboration">
+          <div class="topbar">
+            <div>
+              <p class="eyebrow">????</p>
+              <h2>????????</h2>
+              <p class="page-subtitle">???????????????????????????????????????????</p>
+            </div>
+          </div>
+          <section class="howto"><strong>?????</strong><span>??? @ ??????????????????????</span><span>????????????????????? AI ?????? 10 ???????</span></section>
+          <div class="split">
+            <section class="panel">
+              <div class="panel-heading"><h3>????</h3><span id="collaborationParticipantStatus">0 / 5</span></div>
+              <div id="collaborationParticipantList" class="collaboration-role-grid"></div>
+              <div class="mode-note"><strong>????</strong><p>???????? 5 ????????????????????????</p></div>
+            </section>
+            <section class="panel">
+              <div class="panel-heading"><h3>????</h3><span>?????????</span></div>
+              <form id="collaborationForm" class="form-grid">
+                <label>??????<select name="enabled"><option value="true">??</option><option value="false">??</option></select></label>
+                <label>AI ????<input name="maxMessages" value="10" readonly /></label>
+                <label>????<select name="coordinatorAgentId" id="collaborationCoordinatorSelect"></select></label>
+                <label>????<select name="writerAgentId" id="collaborationWriterSelect"></select></label>
+                <label class="span-2">??? Open ID???????????<input name="decisionMakerOpenIds" placeholder="????????????" /></label>
+                <label>???????<select name="requireCollaborationKeyword"><option value="true">?</option><option value="false">?</option></select></label>
+                <label>??????<select name="allowBotHandoffs"><option value="true">?</option><option value="false">?</option></select></label>
+                <label class="span-2">???????????????<select name="requireWriteConfirmation"><option value="true">?</option><option value="false">?</option></select></label>
+                <button class="primary span-2" type="submit">??????</button>
+              </form>
+            </section>
+          </div>
+          <section class="panel collaboration-rules">
+            <div class="panel-heading"><h3>??????</h3></div>
+            <div class="rule-grid">
+              <div><strong>????</strong><span>?? @ ???????????????????????????????????</span></div>
+              <div><strong>????</strong><span>???????????????????????????</span></div>
+              <div><strong>????</strong><span>????????????AI ????????? 10 ??</span></div>
+              <div><strong>????</strong><span>????? Open ID ???????????????????</span></div>
+            </div>
+          </section>
+        </section>
+
         <section class="view" id="view-workflows">
           <div class="topbar">
             <div>
@@ -251,7 +293,7 @@
             <div>
               <p class="eyebrow">Feishu Connector</p>
               <h2>飞书接入</h2>
-              <p class="page-subtitle">飞书有两种接法：今天最低成本用“群自定义机器人 Webhook”推送结果；你看到的 App ID / Secret 属于开放平台应用机器人，是以后做群里可 @ 的角色。</p>
+              <p class="page-subtitle">飞书有两种接法：群自定义机器人 Webhook 用来快速推送结果；开放平台应用机器人支持群里 @ 问答、按 App ID 路由到不同 TONA 角色。</p>
             </div>
             <button id="testLarkButton">测试发送</button>
           </div>
@@ -329,7 +371,6 @@
     <script src="/app.js"></script>
   </body>
 </html>
-
 
 
 

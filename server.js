@@ -262,7 +262,7 @@ function createInitialDb() {
     const existingIds = new Set(PERSONAL_AGENT_TEMPLATES.map((agent) => agent.id));
     db.agents = [...PERSONAL_AGENT_TEMPLATES, ...db.agents.filter((agent) => !existingIds.has(agent.id))];
   }
-  db.settings = { ...db.settings, defaultProviderId: "deepseek", botConversationMaxRounds: 10, larkBots: [] };
+  db.settings = { ...db.settings, defaultProviderId: "deepseek", botConversationMaxRounds: 10, larkBots: [], collaborationPolicy: defaultCollaborationPolicy(db.agents), collaborationTasks: [] };
   return db;
 }
 
@@ -329,6 +329,8 @@ function writeDb(db) {
 }
 
 function publicDb(db) {
+  const settings = db.settings || {};
+  const { collaborationTasks, ...safeSettings } = settings;
   return {
     ...db,
     providers: db.providers.map((provider) => ({
@@ -336,12 +338,13 @@ function publicDb(db) {
       apiKey: provider.apiKey ? maskKey(provider.apiKey) : ""
     })),
     settings: {
-      ...db.settings,
-      larkWebhookSecret: db.settings?.larkWebhookSecret ? maskSecret(db.settings.larkWebhookSecret) : "",
-      larkAppSecret: db.settings?.larkAppSecret ? maskSecret(db.settings.larkAppSecret) : "",
-      larkVerificationToken: db.settings?.larkVerificationToken ? maskSecret(db.settings.larkVerificationToken) : "",
-      larkEncryptKey: db.settings?.larkEncryptKey ? maskSecret(db.settings.larkEncryptKey) : "",
-      larkBots: (db.settings?.larkBots || []).map((bot) => ({
+      ...safeSettings,
+      collaborationPolicy: normalizeCollaborationPolicy(settings.collaborationPolicy, db.agents),
+      larkWebhookSecret: settings.larkWebhookSecret ? maskSecret(settings.larkWebhookSecret) : "",
+      larkAppSecret: settings.larkAppSecret ? maskSecret(settings.larkAppSecret) : "",
+      larkVerificationToken: settings.larkVerificationToken ? maskSecret(settings.larkVerificationToken) : "",
+      larkEncryptKey: settings.larkEncryptKey ? maskSecret(settings.larkEncryptKey) : "",
+      larkBots: (settings.larkBots || []).map((bot) => ({
         ...bot,
         appSecret: bot.appSecret ? maskSecret(bot.appSecret) : "",
         verificationToken: bot.verificationToken ? maskSecret(bot.verificationToken) : "",
@@ -371,6 +374,65 @@ function isMaskedSecretValue(value) {
 function incomingSecretValue(value, existing) {
   return isMaskedSecretValue(value) ? (existing || "") : String(value).trim();
 }
+
+const COLLABORATION_MAX_PARTICIPANTS = 5;
+const COLLABORATION_MAX_MESSAGES = 10;
+
+function defaultCollaborationPolicy(agents = []) {
+  const ids = agents.map((agent) => agent.id);
+  const coordinatorAgentId = ids.includes("daily_assistant") ? "daily_assistant" : (ids[0] || "");
+  const writerAgentId = ids.includes("research_assistant") ? "research_assistant" : (coordinatorAgentId || ids[0] || "");
+  const participantAgentIds = [coordinatorAgentId, ...ids.filter((id) => id !== coordinatorAgentId)].filter(Boolean).slice(0, COLLABORATION_MAX_PARTICIPANTS);
+  if (writerAgentId && !participantAgentIds.includes(writerAgentId) && participantAgentIds.length < COLLABORATION_MAX_PARTICIPANTS) participantAgentIds.push(writerAgentId);
+  return { enabled: true, coordinatorAgentId, writerAgentId, participantAgentIds, maxMessages: COLLABORATION_MAX_MESSAGES, decisionMakerOpenIds: [], requireCollaborationKeyword: true, allowBotHandoffs: true, requireWriteConfirmation: true };
+}
+
+function normalizeCollaborationPolicy(value, agents = []) {
+  const fallback = defaultCollaborationPolicy(agents);
+  const validIds = new Set(agents.map((agent) => agent.id));
+  const raw = value && typeof value === "object" ? value : {};
+  const selected = Array.isArray(raw.participantAgentIds) ? raw.participantAgentIds : fallback.participantAgentIds;
+  const participantAgentIds = [...new Set(selected.map((id) => String(id || "").trim()).filter((id) => validIds.has(id)))].slice(0, COLLABORATION_MAX_PARTICIPANTS);
+  const coordinatorAgentId = validIds.has(raw.coordinatorAgentId) ? raw.coordinatorAgentId : (participantAgentIds.includes(fallback.coordinatorAgentId) ? fallback.coordinatorAgentId : participantAgentIds[0] || "");
+  if (coordinatorAgentId && !participantAgentIds.includes(coordinatorAgentId)) participantAgentIds.unshift(coordinatorAgentId);
+  const writerAgentId = validIds.has(raw.writerAgentId) ? raw.writerAgentId : (participantAgentIds.includes(fallback.writerAgentId) ? fallback.writerAgentId : participantAgentIds[participantAgentIds.length - 1] || coordinatorAgentId);
+  if (writerAgentId && !participantAgentIds.includes(writerAgentId) && participantAgentIds.length < COLLABORATION_MAX_PARTICIPANTS) participantAgentIds.push(writerAgentId);
+  return {
+    enabled: coerceBoolean(raw.enabled, fallback.enabled),
+    coordinatorAgentId,
+    writerAgentId,
+    participantAgentIds: participantAgentIds.slice(0, COLLABORATION_MAX_PARTICIPANTS),
+    maxMessages: COLLABORATION_MAX_MESSAGES,
+    decisionMakerOpenIds: [...new Set((Array.isArray(raw.decisionMakerOpenIds) ? raw.decisionMakerOpenIds : String(raw.decisionMakerOpenIds || "").split(",")).map((id) => String(id || "").trim()).filter(Boolean))].slice(0, 20),
+    requireCollaborationKeyword: coerceBoolean(raw.requireCollaborationKeyword, true),
+    allowBotHandoffs: coerceBoolean(raw.allowBotHandoffs, true),
+    requireWriteConfirmation: coerceBoolean(raw.requireWriteConfirmation, true)
+  };
+}
+
+function collaborationTasks(db) {
+  db.settings ||= {};
+  db.settings.collaborationTasks = Array.isArray(db.settings.collaborationTasks) ? db.settings.collaborationTasks.slice(-100) : [];
+  return db.settings.collaborationTasks;
+}
+
+function collaborationTaskSequence(policy, initialAgentId) {
+  const writer = policy.writerAgentId;
+  const sequence = [initialAgentId, ...policy.participantAgentIds.filter((id) => id !== initialAgentId && id !== writer)];
+  if (writer && sequence[sequence.length - 1] !== writer) sequence.push(writer);
+  return sequence.filter(Boolean).slice(0, COLLABORATION_MAX_MESSAGES);
+}
+
+function startsCollaborationTask(text) { return /\u534f\u4f5c|\u534f\u540c|\u591a\u673a\u5668\u4eba|\u591aAI|multi[ -]?agent/i.test(String(text || "")); }
+
+function createCollaborationTask(db, message, bot, policy) {
+  const task = { id: crypto.randomUUID().slice(0, 8), chatId: message.chatId || "", startedBy: message.senderId || "", startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), status: "active", maxMessages: policy.maxMessages, messageCount: 0, sequence: collaborationTaskSequence(policy, bot.agentId), nextAgentId: bot.agentId, contributions: [] };
+  collaborationTasks(db).push(task);
+  return task;
+}
+
+function findCollaborationTask(db, taskId) { return collaborationTasks(db).find((task) => task.id === taskId && task.status === "active") || null; }
+function collaborationAgentName(db, agentId) { return db.agents.find((agent) => agent.id === agentId)?.name || agentId; }
 
 function coerceBoolean(value, fallback = false) {
   if (typeof value === "boolean") return value;
@@ -907,22 +969,15 @@ function botConversationMaxRounds(db) {
 }
 
 function parseBotConversationMarker(text) {
-  const match = String(text || "").match(/\[TONA协作:thread=([^;\]]+);round=(\d+)\/(\d+);bot=([^\]]+)\]/);
+  const match = String(text || "").match(/\[TONA-COLLAB:task=([A-Za-z0-9_-]+);step=(\d+)\/(\d+);next=([A-Za-z0-9_-]+)\]/);
   if (!match) return null;
-  return {
-    threadId: match[1],
-    round: Number(match[2]),
-    maxRounds: Number(match[3]),
-    botId: match[4]
-  };
+  return { taskId: match[1], step: Number(match[2]), maxMessages: Number(match[3]), nextAgentId: match[4] };
 }
 
-function stripBotConversationMarker(text) {
-  return String(text || "").replace(/\n?\s*\[TONA协作:thread=[^\]]+\]\s*/g, "").trim();
-}
-
+function stripBotConversationMarker(text) { return String(text || "").replace(/\n?\s*\[TONA-COLLAB:[^\]]+\]\s*/g, "").trim(); }
 function appendBotConversationMarker(text, context) {
-  return `${String(text || "").trim()}\n\n[TONA协作:thread=${context.threadId};round=${context.round}/${context.maxRounds};bot=${context.botId}]`;
+  if (!context?.taskId) return String(text || "").trim();
+  return String(text || "").trim() + "\n\n[TONA-COLLAB:task=" + context.taskId + ";step=" + context.step + "/" + context.maxMessages + ";next=" + (context.nextAgentId || "closed") + "]";
 }
 
 function makeConversationThreadId(message) {
@@ -954,7 +1009,8 @@ function extractFeishuMessage(eventBody) {
   text = text.replace(/<at[^>]*>.*?<\/at>/g, "").replace(/@_user_\d+/g, "").replace(/@_all/g, "").trim();
   const botConversation = parseBotConversationMarker(rawText);
   text = stripBotConversationMarker(text);
-  return { eventType, messageId, chatId, chatType, senderType, rawText, text, isAtAll, hasDirectMention, botConversation, messageType: message.message_type };
+  const senderId = event.sender?.sender_id?.open_id || event.sender?.sender_id?.user_id || event.sender?.open_id || event.sender?.user_id || "";
+  return { eventType, messageId, chatId, chatType, senderType, senderId, rawText, text, isAtAll, hasDirectMention, botConversation, messageType: message.message_type };
 }
 
 async function replyFeishuMessage(settings, messageId, text) {
@@ -983,45 +1039,64 @@ async function processFeishuMessageEvent(eventBody, botConfig = null) {
   const appId = eventBody.header?.app_id || eventBody.app_id || "";
   const bot = botConfig || findLarkBotByAppId(db, appId) || legacyLarkBot(db);
   const message = extractFeishuMessage(eventBody);
-  if (!message.messageId || !message.text) return;
-  const shouldHandle = message.eventType.includes("im.message") || message.eventType.includes("message");
-  if (!shouldHandle) return;
+  if (!bot || !message.messageId || !message.text) return;
+  if (!(message.eventType.includes("im.message") || message.eventType.includes("message"))) return;
 
-  const maxRounds = botConversationMaxRounds(db);
+  const policy = normalizeCollaborationPolicy(db.settings?.collaborationPolicy, db.agents);
+  let task = null;
   let conversation = null;
   if (message.senderType === "bot") {
     conversation = message.botConversation;
-    if (!conversation) return;
-    if (conversation.botId === bot?.id) return;
-    if (conversation.round >= Math.min(conversation.maxRounds || maxRounds, maxRounds)) return;
-    conversation = {
-      threadId: conversation.threadId,
-      round: conversation.round + 1,
-      maxRounds: Math.min(conversation.maxRounds || maxRounds, maxRounds),
-      botId: bot?.id || "unknown_bot"
-    };
+    if (!policy.enabled || !policy.allowBotHandoffs || !conversation) return;
+    task = findCollaborationTask(db, conversation.taskId);
+    if (!task || task.nextAgentId !== bot.agentId || task.messageCount >= task.maxMessages) return;
   } else if (message.senderType && message.senderType !== "user") {
     return;
   } else {
     if (message.chatType === "group" && !message.isAtAll && !message.hasDirectMention) return;
-    conversation = {
-      threadId: makeConversationThreadId(message),
-      round: 1,
-      maxRounds,
-      botId: bot?.id || "unknown_bot"
-    };
+    const decisionMakerAllowed = !policy.decisionMakerOpenIds.length || policy.decisionMakerOpenIds.includes(message.senderId);
+    const canStart = message.chatType === "group" && policy.enabled && decisionMakerAllowed && startsCollaborationTask(message.text) && bot.agentId === policy.coordinatorAgentId;
+    if (canStart) task = createCollaborationTask(db, message, bot, policy);
+  }
+
+  if (task) {
+    task.messageCount += 1;
+    task.updatedAt = new Date().toISOString();
+    const nextAgentId = task.sequence[task.messageCount] || "";
+    if (task.messageCount >= task.maxMessages || !nextAgentId) { task.status = "completed"; task.nextAgentId = ""; }
+    else task.nextAgentId = nextAgentId;
+    conversation = { taskId: task.id, step: task.messageCount, maxMessages: task.maxMessages, nextAgentId: task.nextAgentId || "closed" };
+    writeDb(db);
   }
 
   let replyText = "";
   try {
-    const promptText = message.senderType === "bot"
-      ? `这是同一飞书群内另一个 AI 角色的发言。请只在有新增价值时回应，避免重复寒暄。当前是机器人协作第 ${conversation.round}/${conversation.maxRounds} 轮，达到上限后系统会强制停止。\n\n对方发言：${message.text}`
-      : message.text;
-    replyText = await runAgentReply(db, bot?.agentId || "daily_assistant", promptText);
+    let promptText = message.text;
+    if (task) {
+      const prior = task.contributions.map((item) => item.agentName + ": " + item.content).join("\n\n");
+      const nextLabel = task.nextAgentId ? collaborationAgentName(db, task.nextAgentId) : "none; close with a concise decision-ready summary";
+      promptText = [
+        "This is a system-managed Feishu group collaboration task.",
+        "Task id: " + task.id + ". You are contribution " + task.messageCount + " of " + task.maxMessages + ".",
+        "Give only your professional contribution. Do not add greetings. Do not claim access to missing context. Do not perform write, delete, external-send, or configuration actions.",
+        "Task: " + message.text,
+        "Prior contributions: " + (prior || "none"),
+        "Next scheduled role: " + nextLabel
+      ].join("\n\n");
+    }
+    replyText = await runAgentReply(db, bot.agentId || "daily_assistant", promptText);
   } catch (error) {
-    replyText = "我这边处理失败了：" + error.message;
+    replyText = "Processing failed: " + error.message;
   }
-  await replyFeishuMessage(bot ? larkBotToAppSettings(bot) : (db.settings || {}), message.messageId, appendBotConversationMarker(replyText, conversation));
+
+  if (task) {
+    task.contributions.push({ agentId: bot.agentId, agentName: collaborationAgentName(db, bot.agentId), content: String(replyText).slice(0, 3000), at: new Date().toISOString() });
+    task.contributions = task.contributions.slice(-COLLABORATION_MAX_MESSAGES);
+    writeDb(db);
+    if (task.nextAgentId) replyText += "\n\nSystem handoff: next role is " + collaborationAgentName(db, task.nextAgentId) + ".";
+    else replyText += "\n\nCollaboration is complete. Wait for a human decision or a new collaboration task.";
+  }
+  await replyFeishuMessage(larkBotToAppSettings(bot), message.messageId, appendBotConversationMarker(replyText, conversation));
 }
 
 function summarizeFeishuEventLog(entry, errorText = "") {
@@ -1210,6 +1285,14 @@ async function handleApiInWorkspace(req, res, pathname) {
       });
       writeDb(db);
       return sendJson(res, 200, { provider: { ...provider, apiKey: maskKey(provider.apiKey) } });
+    }
+    if (req.method === "POST" && pathname === "/api/collaboration-policy") {
+      const body = await readBody(req);
+      const db = readDb();
+      db.settings ||= {};
+      db.settings.collaborationPolicy = normalizeCollaborationPolicy(body, db.agents);
+      writeDb(db);
+      return sendJson(res, 200, { collaborationPolicy: db.settings.collaborationPolicy });
     }
     if (req.method === "POST" && pathname === "/api/agents") {
       const body = await readBody(req);
