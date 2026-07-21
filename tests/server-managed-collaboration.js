@@ -126,7 +126,7 @@ async function waitFor(check, label) {
     for (const [index, delivery] of deliveries.entries()) {
       if (delivery.body.msg_type !== "post") throw new Error("Collaboration delivery did not use a rich-text @ message");
       const post = JSON.parse(delivery.body.content);
-      const atElement = post.zh_cn?.content?.[0]?.find((item) => item.tag === "at");
+      const atElement = (post.zh_cn?.content || []).flat().find((item) => item.tag === "at");
       if (!atElement || atElement.user_id !== expectedMentions[index]) throw new Error("Collaboration handoff did not @ the expected next participant");
     }
     console.log("Server-managed collaboration test passed: every scheduled role delivered a real @ handoff and the final synthesis @ mentioned the requester.");

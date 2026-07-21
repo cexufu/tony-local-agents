@@ -905,7 +905,7 @@ async function runAgentReply(db, agentId, text) {
   const provider = db.providers.find((item) => item.id === agent.providerId) || firstReadyProvider(db);
   if (!provider || !provider.enabled || !provider.apiKey) return "我在，但这个角色还没有可用模型。请先在 TONA 的“模型”页启用一个模型，并在“角色”页绑定给我。";
   const result = await callOpenAICompatible(provider, agent, [
-    { role: "system", content: agentSystemPrompt(agent) + "\n\n你正在飞书里和用户对话。除非用户明确要求其他语言，否则始终使用中文。普通聊天不要输出报告模板。" },
+    { role: "system", content: agentSystemPrompt(agent) + "\n\nYou are speaking in a Feishu chat. Unless the user explicitly asks otherwise, use Chinese. Start with the answer, then use 2-5 short lines or bullets. Do not use Markdown headings, tables, report templates, or long preambles in normal chat. Only give long-form detail when the user asks to expand, draft, or write a plan. In a collaboration, directly engage with the previous contribution rather than repeating it." },
     { role: "user", content: text }
   ]);
   return result.content;
@@ -1147,8 +1147,30 @@ function messageMentionsBot(db, message, bot) {
 }
 
 
+function feishuChatText(text) {
+  const raw = stripBotConversationMarker(String(text || "")).replace(/\r/g, "").replace(/\*\*/g, "").replace(new RegExp(String.fromCharCode(96), "g"), "");
+  const lines = raw.split("\n").map((line) => line.replace(/^\s{0,3}#{1,6}\s*/, "").replace(/^>\s?/, "").trim()).filter(Boolean);
+  const compact = [];
+  for (const line of lines) {
+    if (compact.at(-1) === line) continue;
+    compact.push(line);
+  }
+  const joined = compact.join("\n");
+  return joined.length > 4800 ? joined.slice(0, 4770) + "\n…（内容较长，可 @我要求展开）" : joined;
+}
+function feishuPostContent(text, title = "") {
+  const rows = feishuChatText(text).split("\n").filter(Boolean).slice(0, 24).map((line) => [{ tag: "text", text: line }]);
+  return { zh_cn: { title: String(title || "").slice(0, 80), content: rows.length ? rows : [[{ tag: "text", text: "已收到。" }]] } };
+}
+function groupMessageRequestsCollaboration(db, message, bot) {
+  if (startsCollaborationTask(message.text)) return true;
+  const otherAgents = collaborationAgentIdsFromText(db, message.text).filter((agentId) => agentId !== bot.agentId);
+  return otherAgents.length > 0 && /(请|一起|帮我|帮忙|讨论|分析|评估|协同|协调|邀请|问问|看看)/.test(String(message.text || ""));
+}
+
+
 async function replyFeishuMessage(settings, messageId, text) {
-  return replyFeishuMessagePayload(settings, messageId, "text", { text: String(text || "").slice(0, 6000) });
+  return replyFeishuMessagePayload(settings, messageId, "post", feishuPostContent(text));
 }
 async function replyFeishuInteractiveCard(settings, messageId, card) {
   return replyFeishuMessagePayload(settings, messageId, "interactive", card);
@@ -1217,9 +1239,9 @@ function collaborationVisibleMessage(task, db, agentId, content, handoffTarget) 
     ? "协作交付｜" + role
     : "协作第 " + task.messageCount + "/" + task.sequence.length + " 步｜" + role;
   const handoffText = handoffTarget?.final ? " 请确认本次交付，并决定下一步。" : " 请接续讨论，回应并推进上一轮的结论。";
-  const line = [{ tag: "text", text: String(content || "").slice(0, 5200) }];
-  if (handoffTarget?.id) line.push({ tag: "at", user_id: handoffTarget.id, user_name: handoffTarget.name }, { tag: "text", text: handoffText });
-  return { zh_cn: { title, content: [line] } };
+  const post = feishuPostContent(content, title);
+  post.zh_cn.content.push([{ tag: "at", user_id: handoffTarget.id, user_name: handoffTarget.name }, { tag: "text", text: handoffText }]);
+  return post;
 }
 
 async function runServerManagedCollaboration(db, task, message, sourceBot) {
@@ -1372,7 +1394,7 @@ async function processFeishuMessageEvent(eventBody, botConfig = null) {
       return;
     }
     const decisionMakerAllowed = !policy.decisionMakerOpenIds.length || policy.decisionMakerOpenIds.includes(message.senderId);
-    const plan = message.chatType === "group" && startsCollaborationTask(message.text) ? collaborationPlanFromMessage(db, message, bot) : null;
+    const plan = message.chatType === "group" && groupMessageRequestsCollaboration(db, message, bot) ? collaborationPlanFromMessage(db, message, bot) : null;
     const canStart = message.chatType === "group" && policy.enabled && decisionMakerAllowed && Boolean(plan) && !collaborationTaskAlreadyStarted(db, message.messageId);
     if (canStart) {
       task = createCollaborationTask(db, message, bot, plan);

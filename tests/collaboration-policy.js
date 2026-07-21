@@ -81,7 +81,15 @@ async function ready() {
     const openTask = (stored.settings.collaborationTasks || []).find((item) => item.sourceMessageId === 'message_open_discussion');
     if (!openTask || openTask.rounds !== 3 || openTask.sequence.length !== 10 || openTask.sequence.at(-1) !== selectedIds[2]) throw new Error('An unspecified round count did not create the balanced open discussion');
     if (!openTask.sequence.slice(0, -1).includes(selectedIds[2])) throw new Error('The final writer was excluded from the open discussion');
-    console.log('Collaboration policy test passed: five-role cap, ten-message cap, private task ledger, Feishu task directives, open discussion defaults, exact open-id mention routing, and silent group knowledge capture');
+    const naturalRequestText = "@_user_1 请科研助理和" + selectedAgents[2].name + "一起分析这个项目的研究设计";
+    await request('/feishu/events/usr_owner', { method: 'POST', body: JSON.stringify({
+      header: { event_type: 'im.message.receive_v1', app_id: 'cli_test_coordinator' },
+      event: { sender: { sender_type: 'user', sender_id: { open_id: 'ou_test_one' } }, message: { message_id: 'message_named_colleagues', chat_id: 'chat_dynamic_plan', chat_type: 'group', message_type: 'text', mentions: [{ key: '@_user_1', name: 'Feishu display name', id: { open_id: 'ou_test_coordinator' } }], content: JSON.stringify({ text: naturalRequestText }) } }
+    }) });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    stored = JSON.parse(fs.readFileSync(path.join(dataDir, 'workspaces', 'usr_owner', 'studio.json'), 'utf8'));
+    if (!(stored.settings.collaborationTasks || []).some((item) => item.sourceMessageId === 'message_named_colleagues')) throw new Error('Named colleague request did not start a controlled collaboration');
+    console.log('Collaboration policy test passed: five-role cap, ten-message cap, private task ledger, natural named-colleague requests, Feishu task directives, open discussion defaults, exact open-id mention routing, and silent group knowledge capture');
   } finally {
     child.kill();
     fs.rmSync(dataDir, { recursive: true, force: true });
