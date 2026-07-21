@@ -793,6 +793,7 @@ function normalizeLarkBot(bot = {}) {
     encryptKey: String(bot.encryptKey || "").trim(),
     publicCallbackUrl: String(bot.publicCallbackUrl || "").trim(),
     callbackWorkspaceId: String(bot.callbackWorkspaceId || "").trim(),
+    openId: String(bot.openId || "").trim(),
     enabled: coerceBoolean(bot.enabled, true)
   };
 }
@@ -1025,6 +1026,24 @@ async function getFeishuTenantToken(settings) {
   return payload.tenant_access_token;
 }
 
+async function hydrateLarkBotIdentity(db, bot) {
+  if (!bot || bot.openId || !bot.appId || !bot.appSecret) return bot;
+  try {
+    const token = await getFeishuTenantToken(larkBotToAppSettings(bot));
+    const response = await fetch("https://open.feishu.cn/open-apis/bot/v3/info", { headers: { Authorization: "Bearer " + token } });
+    const payload = await response.json().catch(() => ({}));
+    const identity = payload.bot || payload.data?.bot || payload.data || {};
+    const openId = identity.open_id || identity.openId || "";
+    if (!response.ok || payload.code !== 0 || !openId) return bot;
+    bot.openId = String(openId);
+    if (!bot.name && (identity.app_name || identity.bot_name)) bot.name = String(identity.app_name || identity.bot_name);
+    writeDb(db);
+  } catch (error) {
+    logServerError(error);
+  }
+  return bot;
+}
+
 const DEFAULT_BOT_CONVERSATION_MAX_ROUNDS = 10;
 
 function botConversationMaxRounds(db) {
@@ -1133,7 +1152,10 @@ async function processFeishuMessageEvent(eventBody, botConfig = null) {
   } else if (message.senderType && message.senderType !== "user") {
     return;
   } else {
-    if (message.chatType === "group" && !messageMentionsBot(db, message, bot)) return;
+    if (message.chatType === "group") {
+      await hydrateLarkBotIdentity(db, bot);
+      if (!messageMentionsBot(db, message, bot)) return;
+    }
     const decisionMakerAllowed = !policy.decisionMakerOpenIds.length || policy.decisionMakerOpenIds.includes(message.senderId);
     const plan = message.chatType === "group" && startsCollaborationTask(message.text) ? collaborationPlanFromMessage(db, message, bot) : null;
     const canStart = message.chatType === "group" && policy.enabled && decisionMakerAllowed && Boolean(plan) && !collaborationTaskAlreadyStarted(db, message.messageId);
