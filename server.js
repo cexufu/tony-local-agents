@@ -420,8 +420,14 @@ function collaborationTaskSequence(plan) {
   const writer = plan.writerAgentId;
   const contributors = [plan.coordinatorAgentId, ...plan.participantAgentIds.filter((id) => id !== plan.coordinatorAgentId && id !== writer)].filter(Boolean);
   const sequence = [];
-  for (let round = 0; round < plan.rounds && sequence.length < COLLABORATION_MAX_MESSAGES; round += 1) sequence.push(...contributors);
-  if (writer && sequence.length < COLLABORATION_MAX_MESSAGES) sequence.push(writer);
+  const contributionLimit = Math.max(0, COLLABORATION_MAX_MESSAGES - (writer ? 1 : 0));
+  for (let round = 0; round < plan.rounds && sequence.length < contributionLimit; round += 1) {
+    for (const agentId of contributors) {
+      if (sequence.length >= contributionLimit) break;
+      sequence.push(agentId);
+    }
+  }
+  if (writer) sequence.push(writer);
   return sequence.slice(0, COLLABORATION_MAX_MESSAGES);
 }
 
