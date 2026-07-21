@@ -1074,7 +1074,23 @@ function extractFeishuMessage(eventBody) {
   const botConversation = parseBotConversationMarker(rawText);
   text = stripBotConversationMarker(text);
   const senderId = event.sender?.sender_id?.open_id || event.sender?.sender_id?.user_id || event.sender?.open_id || event.sender?.user_id || "";
-  return { eventType, messageId, chatId, chatType, senderType, senderId, rawText, text, isAtAll, hasDirectMention, botConversation, messageType: message.message_type };
+  const mentionLabels = [];
+  for (const mention of Array.isArray(message.mentions) ? message.mentions : []) {
+    for (const value of [mention.name, mention.user_name, mention.display_name, mention.id?.open_id, mention.id?.user_id, mention.open_id, mention.user_id]) {
+      if (value) mentionLabels.push(String(value));
+    }
+  }
+  for (const match of rawText.matchAll(/<at[^>]*>(.*?)<\/at>/gi)) if (match[1]) mentionLabels.push(match[1]);
+  return { eventType, messageId, chatId, chatType, senderType, senderId, rawText, text, isAtAll, hasDirectMention, mentionLabels, botConversation, messageType: message.message_type };
+}
+
+function normalizeMentionLabel(value) { return String(value || "").replace(/^@/, "").replace(/\s+/g, "").trim().toLowerCase(); }
+function messageMentionsBot(db, message, bot) {
+  if (message.isAtAll) return false;
+  const agent = (db.agents || []).find((item) => item.id === bot.agentId);
+  const aliases = [bot.name, agent?.name, bot.openId, bot.userId].map(normalizeMentionLabel).filter(Boolean);
+  const labels = (message.mentionLabels || []).map(normalizeMentionLabel).filter(Boolean);
+  return aliases.some((alias) => labels.includes(alias));
 }
 
 async function replyFeishuMessage(settings, messageId, text) {
@@ -1117,7 +1133,7 @@ async function processFeishuMessageEvent(eventBody, botConfig = null) {
   } else if (message.senderType && message.senderType !== "user") {
     return;
   } else {
-    if (message.chatType === "group" && !message.isAtAll && !message.hasDirectMention) return;
+    if (message.chatType === "group" && !messageMentionsBot(db, message, bot)) return;
     const decisionMakerAllowed = !policy.decisionMakerOpenIds.length || policy.decisionMakerOpenIds.includes(message.senderId);
     const plan = message.chatType === "group" && startsCollaborationTask(message.text) ? collaborationPlanFromMessage(db, message, bot) : null;
     const canStart = message.chatType === "group" && policy.enabled && decisionMakerAllowed && Boolean(plan) && !collaborationTaskAlreadyStarted(db, message.messageId);
