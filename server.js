@@ -1093,10 +1093,43 @@ function larkAppDiagnosis(db, req) {
   };
 }
 
-async function handleFeishuEvent(req, res) {
-  let logId = null;
+function feishuWorkspaceIds() {
+  const ids = [LEGACY_OWNER_ID];
+  try {
+    for (const entry of fs.readdirSync(WORKSPACES_DIR, { withFileTypes: true })) {
+      if (entry.isDirectory() && /^[A-Za-z0-9_-]{3,80}$/.test(entry.name) && !ids.includes(entry.name)) ids.push(entry.name);
+    }
+  } catch {}
+  return ids;
+}
+
+function resolveFeishuWorkspace(body) {
+  if (!body?.encrypt) return LEGACY_OWNER_ID;
+  for (const workspaceId of feishuWorkspaceIds()) {
+    try {
+      const db = workspaceContext.run({ workspaceId }, () => readDb());
+      decryptFeishuPayloadForAnyBot(body.encrypt, db);
+      return workspaceId;
+    } catch {}
+  }
+  return LEGACY_OWNER_ID;
+}
+
+async function handleSharedFeishuEvent(req, res) {
   try {
     const body = await readBody(req);
+    const workspaceId = resolveFeishuWorkspace(body);
+    return workspaceContext.run({ workspaceId }, () => handleFeishuEvent(req, res, body));
+  } catch (error) {
+    logServerError(error);
+    return sendJson(res, 400, { error: error.message });
+  }
+}
+
+async function handleFeishuEvent(req, res, receivedBody = null) {
+  let logId = null;
+  try {
+    const body = receivedBody || await readBody(req);
     const db = readDb();
     const settings = db.settings || {};
     let eventBody = body;
@@ -1332,9 +1365,9 @@ const server = http.createServer((req, res) => {
   if (scopedEvent) {
     return workspaceContext.run({ workspaceId: scopedEvent[1] }, () => handleFeishuEvent(req, res));
   }
-  // FEISHU_LEGACY_OWNER_CALLBACK_V1: keep the original shared URL working for the owner's pre-migration bots.
+  // FEISHU_SHARED_CALLBACK_V2: legacy shared URL auto-locates the bot workspace by its Encrypt Key.
   if (url.pathname === "/feishu/events") {
-    workspaceContext.run({ workspaceId: LEGACY_OWNER_ID }, () => handleFeishuEvent(req, res));
+    return handleSharedFeishuEvent(req, res);
   } else if (url.pathname.startsWith("/api/")) {
     handleApi(req, res, url.pathname);
   } else {
