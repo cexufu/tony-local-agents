@@ -363,6 +363,15 @@ function maskKey(key) {
   return `${key.slice(0, 4)}...${key.slice(-4)}`;
 }
 
+// Public API values are masked (for example, abc...xyz). Never save a mask back over the real credential.
+function isMaskedSecretValue(value) {
+  const text = String(value || "").trim();
+  return !text || /^\*+$/.test(text) || /^.{3}\.\.\..{3}$/.test(text);
+}
+function incomingSecretValue(value, existing) {
+  return isMaskedSecretValue(value) ? (existing || "") : String(value).trim();
+}
+
 function coerceBoolean(value, fallback = false) {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -1236,9 +1245,9 @@ async function handleApiInWorkspace(req, res, pathname) {
         ...source,
         callbackWorkspaceId: activeWorkspaceId(),
         publicCallbackUrl: (() => { const submitted = String(body.publicCallbackUrl || existing?.publicCallbackUrl || "").trim(); const generated = publicFeishuCallbackUrl(req); return generated && /\/feishu\/events\/?$/.test(submitted) ? generated : (submitted || generated); })(),
-        appSecret: body.appSecret && !String(body.appSecret).includes("*") ? body.appSecret : existing?.appSecret || "",
-        verificationToken: body.verificationToken && !String(body.verificationToken).includes("*") ? body.verificationToken : existing?.verificationToken || "",
-        encryptKey: body.encryptKey && !String(body.encryptKey).includes("*") ? body.encryptKey : existing?.encryptKey || ""
+        appSecret: incomingSecretValue(body.appSecret, existing?.appSecret),
+        verificationToken: incomingSecretValue(body.verificationToken, existing?.verificationToken),
+        encryptKey: incomingSecretValue(body.encryptKey, existing?.encryptKey)
       });
       if (!bot.appId) throw new Error("App ID is required.");
       if (!bot.agentId) throw new Error("Agent is required.");
@@ -1262,15 +1271,15 @@ async function handleApiInWorkspace(req, res, pathname) {
       db.settings.larkWebhookUrl = body.larkWebhookUrl || "";
       db.settings.larkAppId = body.larkAppId || db.settings.larkAppId || "";
       db.settings.larkPublicCallbackUrl = body.larkPublicCallbackUrl || db.settings.larkPublicCallbackUrl || "";
-      db.settings.larkVerificationToken = body.larkVerificationToken || db.settings.larkVerificationToken || "";
-      if (body.larkEncryptKey && !body.larkEncryptKey.includes("*")) db.settings.larkEncryptKey = body.larkEncryptKey;
-      if (body.larkAppSecret && !body.larkAppSecret.includes("*")) {
-        db.settings.larkAppSecret = body.larkAppSecret;
+      db.settings.larkVerificationToken = incomingSecretValue(body.larkVerificationToken, db.settings.larkVerificationToken);
+      db.settings.larkEncryptKey = incomingSecretValue(body.larkEncryptKey, db.settings.larkEncryptKey);
+      if (!isMaskedSecretValue(body.larkAppSecret)) {
+        db.settings.larkAppSecret = String(body.larkAppSecret).trim();
       } else if (!body.larkAppSecret && body.clearLarkAppSecret) {
         db.settings.larkAppSecret = "";
       }
-      if (body.larkWebhookSecret && !body.larkWebhookSecret.includes("*")) {
-        db.settings.larkWebhookSecret = body.larkWebhookSecret;
+      if (!isMaskedSecretValue(body.larkWebhookSecret)) {
+        db.settings.larkWebhookSecret = String(body.larkWebhookSecret).trim();
       } else if (!body.larkWebhookSecret) {
         db.settings.larkWebhookSecret = "";
       }
