@@ -1,4 +1,4 @@
-﻿const state = {
+const state = {
   db: null,
   selectedProviderId: null,
   selectedAgentId: null,
@@ -588,6 +588,30 @@ async function testProvider() {
   }
 }
 
+async function runCollaborationPilot() {
+  const button = document.querySelector("#runCollaborationPilotButton");
+  const box = document.querySelector("#pilotResult");
+  if (!button) return;
+  button.disabled = true;
+  button.textContent = "实验运行中...";
+  if (box) box.textContent = "正在用当前账号已启用的模型运行两类任务对照，请勿关闭页面。";
+  try {
+    const result = await api("/api/collaboration-pilot", { method: "POST", body: JSON.stringify({}) });
+    const lines = (result.experiments || []).map((item) => {
+      const score = item.evaluation || {};
+      return item.task.title + "：单智能体 " + (score.single?.overall || "-") + "/5；固定协作 " + (score.fixed?.overall || "-") + "/5；动态协作 " + (score.dynamic?.overall || "-") + "/5。";
+    });
+    if (box) box.textContent = "已完成：" + (result.model?.provider || "") + " / " + (result.model?.defaultModel || "") + "。未向飞书发送消息。\n" + lines.join("\n");
+    await loadRuns();
+    toast("协作实验完成，未向飞书发送任何消息");
+  } catch (error) {
+    if (box) box.textContent = "实验未完成：" + error.message;
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "运行协作实验";
+  }
+}
 async function loadRuns() {
   const runs = await api("/api/runs");
   $("#runList").innerHTML = runs.length ? runs.map((run) => `
@@ -644,6 +668,7 @@ function bindEvents() {
   bindIfPresent("#testLarkButton", "click", testLark);
   bindIfPresent("#testProviderButton", "click", testProvider);
   bindIfPresent("#refreshRunsButton", "click", loadRuns);
+  bindIfPresent("#runCollaborationPilotButton", "click", runCollaborationPilot);
 
   $$(`[data-jump]`).forEach((button) => {
     button.addEventListener("click", () => {
@@ -697,15 +722,3 @@ function bindEvents() {
 
 bindEvents();
 loadState().catch((error) => toast(error.message));
-
-
-
-
-
-
-
-
-
-
-
-

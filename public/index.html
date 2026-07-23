@@ -316,8 +316,13 @@
               <h2>运行记录</h2>
               <p class="page-subtitle">这里看每次工作流的执行结果、模型使用情况和错误提示。</p>
             </div>
-            <button id="refreshRunsButton">刷新</button>
+            <div class="button-row"><button id="runCollaborationPilotButton" class="primary">运行协作实验</button><button id="refreshRunsButton">刷新</button></div>
           </div>
+          <section class="panel">
+            <strong>协作实验室</strong>
+            <p class="meta">在当前登录工作区内，比较单智能体、固定协作和动态选人协作。全程不向飞书发送消息。</p>
+            <div id="pilotResult" class="meta">尚未运行实验。</div>
+          </section>
           <section class="panel">
             <div id="runList" class="run-list"></div>
           </section>

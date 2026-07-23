@@ -816,6 +816,42 @@ async function runWorkflow(body) {
   return run;
 }
 
+async function runCollaborationPilot(db) {
+  const provider = firstReadyProvider(db);
+  if (!provider) throw new Error('没有已启用且已配置 Key 的模型，无法启动协作实验。');
+  const find = (ids, name, role) => ids.map((id) => db.agents.find((item) => item.id === id)).find(Boolean) || { id: ids[0], name, role, style: '中文、简洁、具体。', goals: '完成任务并说明不确定性。', guardrails: '不编造来源。', outputFormat: '短段或项目符号。' };
+  const coordinator = find(['daily_assistant'], '日常助理', '负责协调、整合和交付。');
+  const researcher = find(['research_assistant', 'research_intel_analyst'], '科研助理', '负责研究设计、证据边界和批判性分析。');
+  const data = find(['data_assistant'], '数据助理', '负责方法、测量、检验和可复现性。');
+  const coding = find(['coding_assistant'], '代码助理', '负责技术实现和执行路径。');
+  const ask = async (agent, prompt, context = '') => {
+    const result = await callOpenAICompatible(provider, { ...agent, model: provider.defaultModel, temperature: 0.25 }, [{ role: 'system', content: agentSystemPrompt(agent) + '\n\n这是内部协作实验。请用中文，具体、简洁、诚实，不要假称做过浏览、工具调用或数据访问。' }, { role: 'user', content: prompt + (context ? '\n\n已有协作材料：\n' + context : '') }]);
+    return { agentId: agent.id, agentName: agent.name, content: result.content, model: result.model, usage: result.usage || null };
+  };
+  const context = (items) => items.map((item, index) => '第' + (index + 1) + '步，' + item.agentName + '：\n' + item.content).join('\n\n---\n\n');
+  const tasks = [
+    { id: 'research_design', title: '研究设计', prompt: '设计一个一周内可启动的小型研究：AI 助理如何影响博士生深度工作质量。交付研究问题、可检验假设、最小方法、混淆因素和第一周行动清单。', specialists: [researcher, data] },
+    { id: 'analysis_delivery', title: '数据分析交付', prompt: '为 300 份 AI 工具使用与工作效率问卷设计可靠的数据分析方案。交付清洗、变量构造、分析路径、稳健性检查与可复现交付。', specialists: [data, coding] }
+  ];
+  const experiments = [];
+  for (const task of tasks) {
+    const single = await ask(coordinator, task.prompt);
+    const fixed = [await ask(coordinator, '先拆解协作计划并指出最大风险。任务：' + task.prompt)];
+    fixed.push(await ask(researcher, '做研究与证据边界审查。任务：' + task.prompt, context(fixed)));
+    fixed.push(await ask(data, '补足方法、测量或检验问题。任务：' + task.prompt, context(fixed)));
+    const fixedFinal = await ask(coordinator, '整合材料，消除重复，交付最终答案并保留下一步。任务：' + task.prompt, context(fixed));
+    const dynamic = [await ask(coordinator, '定义目标、交付标准与最关键未知项。任务：' + task.prompt)];
+    for (const specialist of task.specialists) dynamic.push(await ask(specialist, '只补充当前最缺失、最能提升交付质量的一项内容；不要复述。任务：' + task.prompt, context(dynamic)));
+    const dynamicFinal = await ask(coordinator, '整合材料，保留高价值内容、证据边界与立即行动。任务：' + task.prompt, context(dynamic));
+    const judge = await ask(researcher, '作为盲审评估者，比较下面三个方案。按1-5分评价任务完成度、可执行性、证据意识、跨角色整合、非重复性。只输出 JSON：{\"single\":{\"overall\":1,\"notes\":\"...\"},\"fixed\":{\"overall\":1,\"notes\":\"...\"},\"dynamic\":{\"overall\":1,\"notes\":\"...\"},\"ranking\":[\"...\"],\"diagnosis\":\"...\"}\n\n任务：' + task.prompt + '\n\n单智能体：\n' + single.content + '\n\n固定协作：\n' + fixedFinal.content + '\n\n动态协作：\n' + dynamicFinal.content);
+    let evaluation; try { evaluation = JSON.parse((judge.content.match(/\{[\s\S]*\}/) || [])[0] || ''); } catch { evaluation = { raw: judge.content }; }
+    experiments.push({ task: { id: task.id, title: task.title }, protocols: { single: { final: single.content }, fixed: { contributions: fixed, final: fixedFinal.content }, dynamic: { contributions: dynamic, selectedAgents: task.specialists.map((item) => item.id), final: dynamicFinal.content } }, evaluation });
+  }
+  const result = { id: 'pilot_' + new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14) + '_' + crypto.randomUUID().slice(0, 8), workflowName: '多智能体协作实验', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), status: 'success', inputPreview: '两类任务 × 单智能体 / 固定协作 / 动态选人协作；只调用当前工作区模型，不发送飞书消息。', model: { provider: provider.name, defaultModel: provider.defaultModel }, experimentDesign: { tasks: tasks.map((item) => item.id), protocols: ['single', 'fixed', 'dynamic'], visibleContributions: { single: 1, fixed: 3, dynamic: 3 }, finalSynthesis: true }, experiments };
+  fs.writeFileSync(path.join(storagePaths().runsDir, result.id + '.json'), JSON.stringify(result, null, 2));
+  return result;
+}
+
 function normalizeLarkBot(bot = {}) {
   return {
     id: bot.id || `bot_${crypto.randomUUID().slice(0, 8)}`,
@@ -1747,6 +1783,10 @@ async function handleApiInWorkspace(req, res, pathname) {
       if (!text) throw new Error("Text is required.");
       await sendLarkWebhook(db.settings, text.slice(0, 18000));
       return sendJson(res, 200, { ok: true });
+    }
+    if (req.method === "POST" && pathname === "/api/collaboration-pilot") {
+      const result = await runCollaborationPilot(readDb());
+      return sendJson(res, 200, result);
     }
     if (req.method === "POST" && pathname === "/api/test-provider") {
       const body = await readBody(req);
