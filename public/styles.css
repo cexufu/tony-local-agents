@@ -49,6 +49,16 @@ button.primary {
   color: #fff;
 }
 
+button.danger {
+  color: var(--danger);
+  border-color: #d9aaa5;
+  background: #fff8f7;
+}
+
+button.danger:hover {
+  background: #f4e4e1;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 260px 1fr;
@@ -266,6 +276,41 @@ textarea {
 
 .output-panel {
   margin-top: 18px;
+}
+
+.usage-summary {
+  margin-bottom: 18px;
+}
+
+.usage-stats,
+.usage-models {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.usage-models {
+  margin-top: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.usage-metric {
+  border: 1px solid var(--line);
+  padding: 10px;
+  background: #f8fafb;
+  min-width: 0;
+}
+
+.usage-metric strong,
+.usage-metric span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.usage-metric span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .run-status {
@@ -527,6 +572,11 @@ textarea {
 @media (max-width: 980px) {
   .guide-strip {
     grid-template-columns: 1fr;
+  }
+
+  .usage-stats,
+  .usage-models {
+    grid-template-columns: 1fr 1fr;
   }
 }
 

@@ -4,6 +4,7 @@ const state = {
   selectedAgentId: null,
   selectedWorkflowId: null,
   selectedLarkBotId: null,
+  modelUsage: null,
   latestFinalOutput: ""
 };
 
@@ -64,14 +65,16 @@ function renderNextAction() {
     return;
   }
   const workflow = currentWorkflow();
-  box.innerHTML = `<strong>可以运行了：</strong><span>当前有 ${enabledProviders.length} 个可用模型。选择“${escapeHtml(workflow?.name || "工作流")}”，粘贴材料后点击右上角“开始运行”。</span>`;
+  box.innerHTML = `<strong>可以运行了：</strong><span>当前有 ${enabledProviders.length} 个可用模型。选择“${escapeHtml(workflow?.name || "Skill")}”，粘贴材料后点击右上角“开始运行”。</span>`;
 }
 function currentWorkflow() {
   return state.db.workflows.find((workflow) => workflow.id === $("#workflowSelect").value) || state.db.workflows[0];
 }
 
 async function loadState() {
-  state.db = await api("/api/state");
+  const [db, modelUsage] = await Promise.all([api("/api/state"), api("/api/model-usage")]);
+  state.db = db;
+  state.modelUsage = modelUsage;
   state.selectedProviderId ||= state.db.providers[0]?.id;
   state.selectedAgentId ||= state.db.agents[0]?.id;
   state.selectedWorkflowId ||= state.db.workflows[0]?.id;
@@ -83,6 +86,7 @@ function renderAll() {
   renderWorkflowSelect();
   renderStudioSteps();
   renderProviders();
+  renderModelUsage();
   renderProviderForm();
   renderAgentProviderSelect();
   renderAgents();
@@ -360,9 +364,32 @@ function renderProviders() {
   });
 }
 
+function formatNumber(value) {
+  return new Intl.NumberFormat("zh-CN").format(Number(value) || 0);
+}
+
+function formatCost(value, currency) {
+  return new Intl.NumberFormat("zh-CN", { style: "currency", currency: currency || "USD", maximumFractionDigits: 6 }).format(Number(value) || 0);
+}
+
+function renderModelUsage() {
+  const usage = state.modelUsage || { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, costs: {}, byModel: [] };
+  const costText = Object.entries(usage.costs || {}).map(([currency, cost]) => formatCost(cost, currency)).join(" + ") || "$0";
+  $("#modelUsageStats").innerHTML = [
+    [formatNumber(usage.requests), "模型请求"],
+    [formatNumber(usage.inputTokens), "输入 Token"],
+    [formatNumber(usage.outputTokens), "输出 Token"],
+    [costText, "累计估算消费"]
+  ].map(([value, label]) => `<div class="usage-metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`).join("");
+  $("#modelUsageModels").innerHTML = (usage.byModel || []).length
+    ? usage.byModel.map((item) => `<div class="usage-metric"><strong>${escapeHtml(item.providerName)} / ${escapeHtml(item.model)}</strong><span>${formatNumber(item.requests)} 次 · ${formatNumber(item.totalTokens)} Token · ${escapeHtml(formatCost(item.cost, item.currency))}${item.unpricedRequests ? ` · ${item.unpricedRequests} 次未配置价格` : ""}</span></div>`).join("")
+    : '<div class="meta">还没有模型调用记录。配置价格并调用模型后，这里会自动累计。</div>';
+}
+
 function renderProviderForm() {
   const provider = state.db.providers.find((item) => item.id === state.selectedProviderId) || {};
-  setForm($("#providerForm"), provider);
+  const price = provider.pricing?.[provider.defaultModel] || {};
+  setForm($("#providerForm"), { ...provider, inputPerMillion: price.inputPerMillion || 0, outputPerMillion: price.outputPerMillion || 0, currency: price.currency || "USD" });
   $("#providerForm").elements.apiKey.value = "";
 }
 
@@ -446,6 +473,8 @@ function renderWorkflowForm() {
   const workflow = state.db.workflows.find((item) => item.id === state.selectedWorkflowId) || {};
   setForm($("#workflowForm"), {
     ...workflow,
+    triggerExamples: (workflow.triggerExamples || []).join("\n"),
+    enabled: String(workflow.enabled !== false),
     steps: workflowStepsToText(workflow)
   });
 }
@@ -473,15 +502,33 @@ async function saveAgent(event) {
   toast("角色已保存");
 }
 
+async function deleteSelectedAgent() {
+  const agent = state.db.agents.find((item) => item.id === state.selectedAgentId);
+  if (!agent) return toast("请先选择要删除的角色");
+  if (!window.confirm(`确定删除角色“${agent.name}”吗？此操作不能撤销。`)) return;
+  try {
+    await api(`/api/agents/${encodeURIComponent(agent.id)}`, { method: "DELETE" });
+    state.selectedAgentId = null;
+    await loadState();
+    state.selectedAgentId = state.db.agents[0]?.id || null;
+    renderAll();
+    toast("角色已删除");
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
 async function saveWorkflow(event) {
   event.preventDefault();
   const data = formData(event.currentTarget);
   data.steps = textToWorkflowSteps(data.steps);
+  data.triggerExamples = data.triggerExamples.split("\n").map((item) => item.trim()).filter(Boolean);
+  data.enabled = data.enabled === "true";
   data.outputMode = "markdown";
-  const result = await api("/api/workflows", { method: "POST", body: JSON.stringify(data) });
-  state.selectedWorkflowId = result.workflow.id;
+  const result = await api("/api/skills", { method: "POST", body: JSON.stringify(data) });
+  state.selectedWorkflowId = result.skill.id;
   await loadState();
-  toast("流程已保存");
+  toast("Skill 已保存");
 }
 
 async function runWorkflow() {
@@ -489,7 +536,7 @@ async function runWorkflow() {
   const input = $("#workflowInput").value.trim();
   if (!input) return toast("请先输入材料");
   $("#runWorkflowButton").disabled = true;
-  $("#runStatus").textContent = "正在运行。每个 agent 会按流程顺序处理材料。";
+  $("#runStatus").textContent = "正在运行。每个角色会按 Skill 步骤顺序处理材料。";
   $("#runOutput").innerHTML = "";
   try {
     const run = await api("/api/run", {
@@ -514,7 +561,9 @@ async function runWorkflow() {
         <pre>${escapeHtml(run.finalOutput)}</pre>
       </div>
     `;
-    toast("工作流已完成");
+    state.modelUsage = await api("/api/model-usage");
+    renderModelUsage();
+    toast("Skill 已完成");
   } catch (error) {
     $("#runStatus").textContent = error.message;
     toast(error.message);
@@ -562,7 +611,7 @@ async function testLark() {
 }
 
 async function sendToLark() {
-  if (!state.latestFinalOutput) return toast("还没有最终输出，先运行一个工作流");
+  if (!state.latestFinalOutput) return toast("还没有最终输出，先运行一个 Skill");
   try {
     await api("/api/lark-send", {
       method: "POST",
@@ -658,6 +707,7 @@ function bindEvents() {
   $("#sendToLarkButton").addEventListener("click", sendToLark);
   bindIfPresent("#providerForm", "submit", saveProvider);
   bindIfPresent("#agentForm", "submit", saveAgent);
+  bindIfPresent("#deleteAgentButton", "click", deleteSelectedAgent);
   bindIfPresent("#workflowForm", "submit", saveWorkflow);
   bindIfPresent("#larkForm", "submit", saveLarkSettings);
   bindIfPresent("#larkAppForm", "submit", saveLarkAppSettings);
@@ -688,6 +738,9 @@ function bindEvents() {
       apiKey: "",
       defaultModel: "",
       enabled: "true",
+      inputPerMillion: 0,
+      outputPerMillion: 0,
+      currency: "USD",
       models: "",
       notes: ""
     });
@@ -714,7 +767,9 @@ function bindEvents() {
       id: "",
       name: "",
       inputType: "text",
+      enabled: "true",
       description: "",
+      triggerExamples: "",
       steps: `researcher | Analyze the source material.` + "\\n" + `editor | Produce the final output.`
     });
   });

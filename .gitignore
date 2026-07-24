@@ -7,4 +7,7 @@ cloudflared*.log
 data/studio.json
 data/lark_events/
 data/runs/
+data/teamflow/
+data/workspaces/
+data/model-usage.jsonl
 data/*.log

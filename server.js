@@ -274,9 +274,9 @@ function activeWorkspaceId() {
 
 function storagePaths() {
   const workspaceId = activeWorkspaceId();
-  if (!workspaceId) return { dbPath: ROOT_DB_PATH, runsDir: ROOT_RUNS_DIR };
+  if (!workspaceId) return { dbPath: ROOT_DB_PATH, runsDir: ROOT_RUNS_DIR, usagePath: path.join(DATA_DIR, "model-usage.jsonl") };
   const directory = path.join(WORKSPACES_DIR, workspaceId);
-  return { dbPath: path.join(directory, "studio.json"), runsDir: path.join(directory, "runs") };
+  return { dbPath: path.join(directory, "studio.json"), runsDir: path.join(directory, "runs"), usagePath: path.join(directory, "model-usage.jsonl") };
 }
 
 function ensureStore() {
@@ -600,6 +600,51 @@ function upsertById(list, item) {
   return normalized;
 }
 
+function normalizeSkill(input) {
+  return {
+    ...input,
+    triggerExamples: Array.isArray(input.triggerExamples)
+      ? input.triggerExamples.map((item) => String(item).trim()).filter(Boolean)
+      : String(input.triggerExamples || "").split("\n").map((item) => item.trim()).filter(Boolean),
+    enabled: coerceBoolean(input.enabled, true),
+    steps: Array.isArray(input.steps) ? input.steps : []
+  };
+}
+
+function agentDependencies(db, agentId) {
+  const skillNames = (db.workflows || [])
+    .filter((skill) => (skill.steps || []).some((step) => step.agentId === agentId))
+    .map((skill) => skill.name || skill.id);
+  const botNames = (db.settings?.larkBots || [])
+    .filter((bot) => bot.agentId === agentId)
+    .map((bot) => bot.name || bot.id);
+  return { skills: skillNames, larkBots: botNames };
+}
+
+function deleteAgent(db, agentId) {
+  const index = db.agents.findIndex((agent) => agent.id === agentId);
+  if (index < 0) {
+    const error = new Error("Agent not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+  const dependencies = agentDependencies(db, agentId);
+  if (dependencies.skills.length || dependencies.larkBots.length) {
+    const details = [
+      dependencies.skills.length ? `Skill Center: ${dependencies.skills.join(", ")}` : "",
+      dependencies.larkBots.length ? `Feishu bots: ${dependencies.larkBots.join(", ")}` : ""
+    ].filter(Boolean).join("; ");
+    const error = new Error(`This agent is still in use. Remove these references first: ${details}.`);
+    error.statusCode = 409;
+    error.dependencies = dependencies;
+    throw error;
+  }
+  const [agent] = db.agents.splice(index, 1);
+  db.settings ||= {};
+  db.settings.collaborationPolicy = normalizeCollaborationPolicy(db.settings.collaborationPolicy, db.agents);
+  return agent;
+}
+
 function agentSystemPrompt(agent) {
   return [
     `You are ${agent.name}.`,
@@ -652,13 +697,86 @@ async function callOpenAICompatible(provider, agent, messages) {
         return;
       }
       try {
-        resolve(JSON.parse(stdout));
+        const result = JSON.parse(stdout);
+        recordModelUsage(provider, agent, result);
+        resolve(result);
       } catch {
         reject(new Error("LLM call returned invalid JSON."));
       }
     });
     child.stdin.end(childInput);
   });
+}
+
+function usageTokens(usage) {
+  const inputTokens = Number(usage?.prompt_tokens ?? usage?.input_tokens ?? 0) || 0;
+  const outputTokens = Number(usage?.completion_tokens ?? usage?.output_tokens ?? 0) || 0;
+  return { inputTokens, outputTokens, totalTokens: Number(usage?.total_tokens) || inputTokens + outputTokens };
+}
+
+function modelPrice(provider, model) {
+  const price = provider.pricing?.[model] || {};
+  return {
+    currency: String(price.currency || "USD").toUpperCase(),
+    inputPerMillion: Number(price.inputPerMillion) || 0,
+    outputPerMillion: Number(price.outputPerMillion) || 0
+  };
+}
+
+function recordModelUsage(provider, agent, result) {
+  if (!result?.usage) return;
+  const model = result.model || agent.model || provider.defaultModel;
+  const tokens = usageTokens(result.usage);
+  const price = modelPrice(provider, model);
+  const cost = tokens.inputTokens / 1_000_000 * price.inputPerMillion
+    + tokens.outputTokens / 1_000_000 * price.outputPerMillion;
+  const event = {
+    id: crypto.randomUUID(),
+    at: new Date().toISOString(),
+    providerId: provider.id,
+    providerName: provider.name,
+    model,
+    agentId: agent.id || "",
+    agentName: agent.name || "",
+    ...tokens,
+    currency: price.currency,
+    cost,
+    priced: price.inputPerMillion > 0 || price.outputPerMillion > 0
+  };
+  ensureStore();
+  fs.appendFileSync(storagePaths().usagePath, JSON.stringify(event) + "\n");
+}
+
+function modelUsageSummary() {
+  ensureStore();
+  const usagePath = storagePaths().usagePath;
+  const events = fs.existsSync(usagePath)
+    ? fs.readFileSync(usagePath, "utf8").split("\n").filter(Boolean).flatMap((line) => {
+      try { return [JSON.parse(line)]; } catch { return []; }
+    })
+    : [];
+  const groups = new Map();
+  for (const event of events) {
+    const key = `${event.providerId}:${event.model}:${event.currency}`;
+    const group = groups.get(key) || { providerId: event.providerId, providerName: event.providerName, model: event.model, currency: event.currency || "USD", requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, unpricedRequests: 0 };
+    group.requests += 1;
+    group.inputTokens += Number(event.inputTokens) || 0;
+    group.outputTokens += Number(event.outputTokens) || 0;
+    group.totalTokens += Number(event.totalTokens) || 0;
+    group.cost += Number(event.cost) || 0;
+    if (!event.priced) group.unpricedRequests += 1;
+    groups.set(key, group);
+  }
+  const byModel = [...groups.values()].sort((a, b) => b.cost - a.cost || b.totalTokens - a.totalTokens);
+  return {
+    requests: events.length,
+    inputTokens: events.reduce((sum, event) => sum + (Number(event.inputTokens) || 0), 0),
+    outputTokens: events.reduce((sum, event) => sum + (Number(event.outputTokens) || 0), 0),
+    totalTokens: events.reduce((sum, event) => sum + (Number(event.totalTokens) || 0), 0),
+    costs: byModel.reduce((totals, item) => ({ ...totals, [item.currency]: (totals[item.currency] || 0) + item.cost }), {}),
+    byModel,
+    recent: events.slice(-20).reverse()
+  };
 }
 function fallbackOutput(agent, task, input, previousOutputs) {
   const previousText = previousOutputs.map((output) => output.content).join("\n\n");
@@ -734,8 +852,10 @@ function applyQuickSetup(db, body) {
 
 async function runWorkflow(body) {
   const db = readDb();
-  const workflow = db.workflows.find((item) => item.id === body.workflowId);
-  if (!workflow) throw new Error("Workflow not found.");
+  const requestedId = body.skillId || body.workflowId;
+  const workflow = db.workflows.find((item) => item.id === requestedId);
+  if (!workflow) throw new Error("Skill not found.");
+  if (workflow.enabled === false) throw new Error("This skill is disabled.");
   const sourceInput = String(body.input || "").trim();
   if (!sourceInput) throw new Error("Input text is required.");
 
@@ -802,6 +922,7 @@ async function runWorkflow(body) {
   const run = {
     id: runId,
     workflowId: workflow.id,
+    skillId: workflow.id,
     workflowName: workflow.name,
     startedAt: startedAt.toISOString(),
     finishedAt: new Date().toISOString(),
@@ -1660,6 +1781,9 @@ async function handleApiInWorkspace(req, res, pathname) {
     if (req.method === "GET" && pathname === "/api/runs") {
       return sendJson(res, 200, listRuns());
     }
+    if (req.method === "GET" && pathname === "/api/model-usage") {
+      return sendJson(res, 200, modelUsageSummary());
+    }
     if (req.method === "POST" && pathname === "/api/providers") {
       const body = await readBody(req);
       const db = readDb();
@@ -1669,7 +1793,15 @@ async function handleApiInWorkspace(req, res, pathname) {
         ...body,
         enabled: hasNewApiKey ? true : coerceBoolean(body.enabled, existing?.enabled || false),
         apiKey: hasNewApiKey ? body.apiKey : existing?.apiKey || "",
-        models: Array.isArray(body.models) ? body.models : String(body.models || "").split(",").map((m) => m.trim()).filter(Boolean)
+        models: Array.isArray(body.models) ? body.models : String(body.models || "").split(",").map((m) => m.trim()).filter(Boolean),
+        pricing: {
+          ...(existing?.pricing || {}),
+          [String(body.defaultModel || existing?.defaultModel || "")]: {
+            currency: String(body.currency || existing?.pricing?.[body.defaultModel]?.currency || "USD").toUpperCase(),
+            inputPerMillion: Number(body.inputPerMillion) || 0,
+            outputPerMillion: Number(body.outputPerMillion) || 0
+          }
+        }
       });
       writeDb(db);
       return sendJson(res, 200, { provider: { ...provider, apiKey: maskKey(provider.apiKey) } });
@@ -1689,10 +1821,27 @@ async function handleApiInWorkspace(req, res, pathname) {
       writeDb(db);
       return sendJson(res, 200, { agent });
     }
+    const deleteAgentMatch = pathname.match(/^\/api\/agents\/([A-Za-z0-9_-]{1,80})$/);
+    if (req.method === "DELETE" && deleteAgentMatch) {
+      const db = readDb();
+      const agent = deleteAgent(db, deleteAgentMatch[1]);
+      writeDb(db);
+      return sendJson(res, 200, { ok: true, agent });
+    }
+    if (req.method === "GET" && pathname === "/api/skills") {
+      return sendJson(res, 200, { skills: (readDb().workflows || []).map(normalizeSkill) });
+    }
+    if (req.method === "POST" && pathname === "/api/skills") {
+      const body = normalizeSkill(await readBody(req));
+      const db = readDb();
+      const skill = upsertById(db.workflows, body);
+      writeDb(db);
+      return sendJson(res, 200, { skill });
+    }
     if (req.method === "POST" && pathname === "/api/workflows") {
       const body = await readBody(req);
       const db = readDb();
-      const workflow = upsertById(db.workflows, body);
+      const workflow = upsertById(db.workflows, normalizeSkill(body));
       writeDb(db);
       return sendJson(res, 200, { workflow });
     }
@@ -1802,7 +1951,7 @@ async function handleApiInWorkspace(req, res, pathname) {
     }
     sendJson(res, 404, { error: "API route not found." });
   } catch (error) {
-    sendJson(res, 400, { error: error.message });
+    sendJson(res, error.statusCode || 400, { error: error.message, dependencies: error.dependencies });
   }
 }
 
@@ -1830,6 +1979,3 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`TONA Agent Studio is running at http://localhost:${PORT}`);
 });
-
-
-

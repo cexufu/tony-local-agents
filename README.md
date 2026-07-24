@@ -6,8 +6,8 @@ The first MVP focuses on:
 
 - managing multiple model providers, including OpenAI-compatible APIs
 - creating and editing AI roles from a web page
-- composing simple multi-agent workflows
-- running workflows from pasted text
+- creating reusable multi-agent skills in Skill Center
+- running skills from pasted text
 - saving local run logs
 
 It is intentionally local-first. Your API keys are stored in `data/studio.json` on this machine and are only shown as masked values in the UI.
@@ -66,9 +66,9 @@ Each agent has:
 
 The current MVP turns these fields into a system prompt. It does not require prompt-file editing.
 
-## Workflows
+## Skill Center
 
-Open the **流程** page to edit workflow steps.
+Open **Skill Center** to define a reusable capability with trigger examples, an input type, enabled state, and ordered role steps.
 
 Use one step per line:
 
@@ -80,7 +80,7 @@ editor | Produce a polished final memo.
 
 ## Run Logs
 
-Every workflow run is saved under:
+Every Skill run is saved under:
 
 ```text
 data/runs/
@@ -92,7 +92,7 @@ Inputs are not saved in full by default. The run log stores an input preview, st
 
 - Feishu/Lark integration is not implemented yet.
 - Only OpenAI-compatible chat completion APIs are implemented.
-- Workflow steps are sequential.
+- Skill steps are sequential. The legacy `/api/workflows` endpoint remains available for compatibility.
 - There is no user account system.
 - API keys are stored locally but are not encrypted yet.
 
@@ -127,7 +127,7 @@ Use the **快速开始** page for the normal workflow:
 5. Paste research material and click **保存并运行**.
 6. Click **发送结果到飞书** when you want to push the result to your Feishu group.
 
-The advanced pages, **模型 / 角色 / 流程 / 飞书 / 记录**, are still available when you want to customize details.
+The advanced pages, **模型 / 角色 / Skill Center / 飞书 / 记录**, are still available when you want to customize details.
 
 ## Feishu App Bot Wizard
 
@@ -145,4 +145,3 @@ For App Bot mode, TONA generates and handles:
 - recommended permission checklist
 
 Feishu cannot call `localhost`, so event subscription requires a public callback URL from a tunnel or deployment, for example `https://your-domain/feishu/events`.
-
